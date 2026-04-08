@@ -115,96 +115,120 @@ def monthly_returns_table(prices: pd.Series) -> pd.DataFrame:
 
 # ---------------------------------------------------------------------------
 # Signal engine — composite quantitative score → Buy / Hold / Sell
+# Now sector-relative: valuation scored vs sector medians, not fixed numbers.
 # ---------------------------------------------------------------------------
+
+# Sector median fundamentals (fallback when live medians unavailable).
+# Updated from S&P 500 screener data April 2026.
+SECTOR_MEDIANS: dict = {
+    "Technology":             {"pe": 22.2, "pb": 4.9, "ev": 14.0},
+    "Financial Services":     {"pe": 13.9, "pb": 2.0, "ev": 12.6},
+    "Healthcare":             {"pe": 24.9, "pb": 3.2, "ev": 15.2},
+    "Industrials":            {"pe": 26.4, "pb": 4.1, "ev": 15.7},
+    "Consumer Cyclical":      {"pe": 27.2, "pb": 5.0, "ev": 16.3},
+    "Consumer Defensive":     {"pe": 19.6, "pb": 4.2, "ev": 14.2},
+    "Energy":                 {"pe": 19.3, "pb": 2.7, "ev": 10.4},
+    "Utilities":              {"pe": 23.9, "pb": 2.7, "ev": 14.8},
+    "Communication Services": {"pe": 13.2, "pb": 2.0, "ev":  9.1},
+    "Real Estate":            {"pe": 21.7, "pb": 2.5, "ev": 17.1},
+    "Basic Materials":        {"pe": 25.3, "pb": 3.7, "ev": 14.1},
+}
+_DEFAULT_MEDIANS = {"pe": 21.0, "pb": 3.0, "ev": 14.0}
+
+
+def _score_vs_median(value: float, median: float) -> int:
+    """Score a valuation metric relative to its sector median.
+    Lower than median = cheaper = higher score."""
+    if median <= 0:
+        return 50
+    ratio = value / median
+    if ratio < 0.60:
+        return 100
+    elif ratio < 0.85:
+        return 75
+    elif ratio < 1.10:
+        return 50
+    elif ratio < 1.40:
+        return 30
+    else:
+        return 10
+
 
 def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None) -> dict:
     """
     Score a stock 0–100 across four dimensions, then map to a signal.
-    Returns {"signal": "Buy"/"Hold"/"Sell", "score": 0-100, "breakdown": {...}}.
+    Valuation is now SECTOR-RELATIVE — scored vs sector median, not absolute thresholds.
+    Returns {"signal", "score", "breakdown", "why"}.
     """
     scores = {}
+    reasons: dict[str, str] = {}  # per-dimension plain-English explanation
 
-    # --- 1. VALUATION (0-100, higher = cheaper = better) ---
+    sector = info.get("sector", "")
+    med = SECTOR_MEDIANS.get(sector, _DEFAULT_MEDIANS)
+
+    # --- 1. VALUATION (sector-relative, 0-100, higher = cheaper) ---
     val_points = 0
     val_count = 0
+    val_notes = []
 
     pe = info.get("trailingPE")
     if pe and pe > 0:
         val_count += 1
-        if pe < 12:
-            val_points += 100
-        elif pe < 18:
-            val_points += 70
-        elif pe < 25:
-            val_points += 40
-        else:
-            val_points += 10
+        s = _score_vs_median(pe, med["pe"])
+        val_points += s
+        if s >= 75:
+            val_notes.append(f"P/E ({pe:.1f}) is cheap vs {sector or 'market'} median ({med['pe']:.1f})")
+        elif s <= 30:
+            val_notes.append(f"P/E ({pe:.1f}) is expensive vs {sector or 'market'} median ({med['pe']:.1f})")
 
     pb = info.get("priceToBook")
     if pb and pb > 0:
         val_count += 1
-        if pb < 1:
-            val_points += 100
-        elif pb < 2:
-            val_points += 70
-        elif pb < 4:
-            val_points += 40
-        else:
-            val_points += 10
+        s = _score_vs_median(pb, med["pb"])
+        val_points += s
 
     ev_ebitda = info.get("enterpriseToEbitda")
     if ev_ebitda and ev_ebitda > 0:
         val_count += 1
-        if ev_ebitda < 8:
-            val_points += 100
-        elif ev_ebitda < 12:
-            val_points += 70
-        elif ev_ebitda < 18:
-            val_points += 40
-        else:
-            val_points += 10
-
-    peg = info.get("pegRatio")
-    if peg and peg > 0:
-        val_count += 1
-        if peg < 1:
-            val_points += 100
-        elif peg < 1.5:
-            val_points += 70
-        elif peg < 2.5:
-            val_points += 40
-        else:
-            val_points += 10
+        s = _score_vs_median(ev_ebitda, med["ev"])
+        val_points += s
+        if s >= 75:
+            val_notes.append(f"EV/EBITDA ({ev_ebitda:.1f}) is below sector median ({med['ev']:.1f})")
 
     scores["Valuation"] = val_points / val_count if val_count > 0 else 50
+    reasons["Valuation"] = "; ".join(val_notes) if val_notes else (
+        "Valuation roughly in line with sector peers" if scores["Valuation"] >= 40
+        else "Looks expensive relative to sector peers"
+    )
 
     # --- 2. QUALITY (0-100) ---
     qual_points = 0
     qual_count = 0
+    qual_notes = []
 
     roe = info.get("returnOnEquity")
     if roe is not None:
         qual_count += 1
         if roe > 0.25:
-            qual_points += 100
+            qual_points += 100; qual_notes.append(f"ROE is excellent ({roe*100:.0f}%)")
         elif roe > 0.15:
             qual_points += 75
         elif roe > 0.08:
             qual_points += 45
         else:
-            qual_points += 10
+            qual_points += 10; qual_notes.append(f"ROE is weak ({roe*100:.0f}%)")
 
     margin = info.get("profitMargins")
     if margin is not None:
         qual_count += 1
         if margin > 0.20:
-            qual_points += 100
+            qual_points += 100; qual_notes.append(f"strong {margin*100:.0f}% profit margins")
         elif margin > 0.10:
             qual_points += 70
         elif margin > 0.03:
             qual_points += 40
         else:
-            qual_points += 10
+            qual_points += 10; qual_notes.append(f"thin {margin*100:.1f}% profit margins")
 
     de = info.get("debtToEquity")
     if de is not None:
@@ -216,7 +240,7 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
         elif de < 200:
             qual_points += 40
         else:
-            qual_points += 10
+            qual_points += 10; qual_notes.append(f"high leverage (D/E {de:.0f})")
 
     cr = info.get("currentRatio")
     if cr is not None:
@@ -231,12 +255,13 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
             qual_points += 10
 
     scores["Quality"] = qual_points / qual_count if qual_count > 0 else 50
+    reasons["Quality"] = "; ".join(qual_notes) if qual_notes else "Quality metrics are average"
 
-    # --- 3. MOMENTUM / TECHNICAL (0-100) ---
+    # --- 3. MOMENTUM (0-100) ---
     mom_points = 0
     mom_count = 0
+    mom_notes = []
 
-    # Price vs 52-week high
     price = info.get("currentPrice")
     high52 = info.get("fiftyTwoWeekHigh")
     low52 = info.get("fiftyTwoWeekLow")
@@ -244,51 +269,51 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
         mom_count += 1
         position = (price - low52) / (high52 - low52)
         if position > 0.8:
-            mom_points += 80  # near high — strong momentum
+            mom_points += 80; mom_notes.append("trading near 52-week high")
         elif position > 0.5:
             mom_points += 60
         elif position > 0.3:
-            mom_points += 50  # middle — neutral
+            mom_points += 50
         else:
-            mom_points += 30  # beaten down — could be opportunity or trap
+            mom_points += 30; mom_notes.append(f"{((high52 - price) / high52 * 100):.0f}% below 52-week high")
 
-    # Recent total return
     tr = metrics.get("total_return", 0)
     mom_count += 1
     if tr > 20:
-        mom_points += 85
+        mom_points += 85; mom_notes.append(f"strong {tr:.0f}% return over period")
     elif tr > 5:
         mom_points += 65
     elif tr > -5:
         mom_points += 45
     elif tr > -15:
-        mom_points += 25
+        mom_points += 25; mom_notes.append(f"negative {tr:.0f}% return dragging momentum")
     else:
-        mom_points += 10
+        mom_points += 10; mom_notes.append(f"steep {tr:.0f}% decline")
 
-    # Earnings growth
     eg = info.get("earningsGrowth")
     if eg is not None:
         mom_count += 1
         if eg > 0.20:
-            mom_points += 90
+            mom_points += 90; mom_notes.append(f"earnings growing {eg*100:.0f}%")
         elif eg > 0.05:
             mom_points += 65
         elif eg > -0.05:
             mom_points += 40
         else:
-            mom_points += 15
+            mom_points += 15; mom_notes.append(f"earnings declining {eg*100:.0f}%")
 
     scores["Momentum"] = mom_points / mom_count if mom_count > 0 else 50
+    reasons["Momentum"] = "; ".join(mom_notes) if mom_notes else "Momentum is neutral"
 
     # --- 4. RISK (0-100, lower risk = higher score) ---
     risk_points = 0
     risk_count = 0
+    risk_notes = []
 
     sharpe = metrics.get("sharpe", 0)
     risk_count += 1
     if sharpe > 1.5:
-        risk_points += 95
+        risk_points += 95; risk_notes.append(f"excellent risk-adjusted returns (Sharpe {sharpe:.2f})")
     elif sharpe > 0.8:
         risk_points += 70
     elif sharpe > 0.3:
@@ -296,7 +321,7 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
     elif sharpe > 0:
         risk_points += 25
     else:
-        risk_points += 10
+        risk_points += 10; risk_notes.append(f"poor risk-adjusted returns (Sharpe {sharpe:.2f})")
 
     mdd = abs(metrics.get("max_drawdown", 0))
     risk_count += 1
@@ -307,7 +332,7 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
     elif mdd < 35:
         risk_points += 40
     else:
-        risk_points += 15
+        risk_points += 15; risk_notes.append(f"deep {mdd:.0f}% max drawdown")
 
     beta_val = info.get("beta")
     if beta_val is not None:
@@ -315,26 +340,26 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
         if 0.5 <= beta_val <= 1.2:
             risk_points += 75
         elif beta_val < 0.5:
-            risk_points += 60  # low beta — defensive but could lag
+            risk_points += 60
         elif beta_val <= 1.5:
             risk_points += 50
         else:
-            risk_points += 20
+            risk_points += 20; risk_notes.append(f"high beta ({beta_val:.2f}) amplifies market swings")
 
-    # Benchmark alpha bonus
     if bench_metrics and "alpha" in bench_metrics:
         risk_count += 1
         alpha = bench_metrics["alpha"]
         if alpha > 10:
-            risk_points += 90
+            risk_points += 90; risk_notes.append(f"strong alpha ({alpha:.1f}%) vs benchmark")
         elif alpha > 0:
             risk_points += 65
         elif alpha > -10:
             risk_points += 35
         else:
-            risk_points += 10
+            risk_points += 10; risk_notes.append(f"negative alpha ({alpha:.1f}%) vs benchmark")
 
     scores["Risk"] = risk_points / risk_count if risk_count > 0 else 50
+    reasons["Risk"] = "; ".join(risk_notes) if risk_notes else "Risk profile is moderate"
 
     # --- COMPOSITE (weighted) ---
     composite = (
@@ -351,7 +376,24 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
     else:
         signal = "Sell"
 
-    return {"signal": signal, "score": round(composite, 1), "breakdown": scores}
+    # --- WHY (plain-English summary) ---
+    dims = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    best = dims[0]
+    worst = dims[-1]
+    why = (
+        f"**{best[0]}** ({best[1]:.0f}/100) is the strongest dimension"
+        f" — {reasons[best[0]]}. "
+        f"**{worst[0]}** ({worst[1]:.0f}/100) is the weakest"
+        f" — {reasons[worst[0]]}."
+    )
+
+    return {
+        "signal": signal,
+        "score": round(composite, 1),
+        "breakdown": scores,
+        "why": why,
+        "reasons": reasons,
+    }
 
 
 # ---------------------------------------------------------------------------
