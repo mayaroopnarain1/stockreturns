@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Shared data-fetching helpers and constants."""
+from __future__ import annotations
 
 import streamlit as st
 import yfinance as yf
