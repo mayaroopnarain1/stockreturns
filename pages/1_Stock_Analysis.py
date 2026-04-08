@@ -85,11 +85,8 @@ with col_score:
     st.caption("Weighted blend of valuation, quality, momentum, and risk scores.")
 
 with col_note:
-    st.markdown(
-        f"**{ticker}** scores **{sig['score']}** based on the quantitative factors below. "
-        f"This is a data-driven signal, not financial advice — it tells you what the "
-        f"numbers say, not what the market will do."
-    )
+    st.markdown(sig.get("why", ""))
+    st.caption("This is a data-driven signal, not financial advice — it tells you what the numbers say, not what the market will do.")
     # Score breakdown bar
     bd = sig["breakdown"]
     breakdown_df = pd.DataFrame({
@@ -98,6 +95,42 @@ with col_note:
         "Weight": ["30%", "25%", "20%", "25%"],
     })
     st.dataframe(breakdown_df.set_index("Dimension"), width="stretch")
+
+# Analyst consensus + earnings date
+consensus_col, earnings_col = st.columns(2)
+with consensus_col:
+    target_price = info.get("targetMeanPrice")
+    rec = info.get("recommendationMean")
+    cur = info.get("currentPrice")
+    if target_price and cur:
+        upside = (target_price / cur - 1) * 100
+        st.metric("Wall Street Price Target", f"${target_price:.2f}", f"{upside:+.1f}% upside")
+    if rec:
+        rec_labels = {1: "Strong Buy", 2: "Buy", 3: "Hold", 4: "Sell", 5: "Strong Sell"}
+        nearest = rec_labels.get(round(rec), f"{rec:.1f}")
+        st.caption(f"Analyst consensus: **{nearest}** ({rec:.1f}/5)")
+
+with earnings_col:
+    from datetime import datetime
+    raw_earnings = info.get("earningsTimestamp") or info.get("earningsDate")
+    earnings_dt = None
+    if isinstance(raw_earnings, (int, float)) and raw_earnings > 0:
+        earnings_dt = datetime.fromtimestamp(raw_earnings)
+    elif isinstance(raw_earnings, list) and raw_earnings:
+        try:
+            earnings_dt = datetime.fromtimestamp(raw_earnings[0])
+        except Exception:
+            pass
+    if earnings_dt:
+        days_until = (earnings_dt - datetime.now()).days
+        if days_until >= 0:
+            st.metric("Next Earnings", earnings_dt.strftime("%b %d, %Y"), f"in {days_until} days")
+            if days_until <= 14:
+                st.caption("Earnings are imminent — the signal is based on trailing data and could shift significantly.")
+        else:
+            st.metric("Last Earnings", earnings_dt.strftime("%b %d, %Y"))
+    else:
+        st.caption("Earnings date not available.")
 
 st.markdown("---")
 
