@@ -19,20 +19,17 @@ with col1:
     st.subheader(":material/search: Stock Analysis")
     st.write(
         "Enter any ticker and get a **Buy / Hold / Sell** signal backed by a "
-        "composite score across valuation, quality, momentum, and risk. Full "
-        "fundamentals, benchmark comparison, drawdown chart, and monthly heatmap included."
+        "5-dimension composite score: valuation (sector-relative P/E, FCF yield), "
+        "quality (margins, ROE), momentum, risk, and **Wall Street consensus**. "
+        "Includes macro context (Treasury yields, VIX), full fundamentals, "
+        "benchmark comparison, rolling volatility, and monthly heatmap."
     )
 
     st.subheader(":material/filter_list: Stock Screener")
     st.write(
-        "Scan the S&P 500 for undervalued, high-quality stocks using fundamental "
-        "filters (P/E, P/B, EV/EBITDA, ROE, margins) and rank by a composite value score."
-    )
-
-    st.subheader(":material/bar_chart: Returns & Volatility")
-    st.write(
-        "Deep-dive into daily returns, rolling volatility, Sharpe/Sortino/Calmar ratios, "
-        "Alpha, Beta, upside/downside capture, CVaR, drawdown chart, and monthly heatmap."
+        "Scan the S&P 500 for undervalued, high-quality stocks using intuitive "
+        "dropdown filters (P/E, EV/EBITDA, ROE, margins) with quick-pick presets "
+        "like Value Plays, Quality Growth, and Dividend Income."
     )
 
 with col2:
