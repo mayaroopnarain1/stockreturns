@@ -70,6 +70,44 @@ def get_ticker_info(symbol: str) -> dict:
         return {}
 
 
+@st.cache_data(show_spinner=False, ttl="6h")
+def fetch_macro_context() -> dict:
+    """Fetch current macro indicators: 10-Year Treasury yield and VIX.
+    Returns dict with 'tnx' (yield %), 'vix' (level), and descriptions."""
+    result = {"tnx": None, "vix": None, "tnx_desc": "", "vix_desc": ""}
+    try:
+        tnx = yf.Ticker("^TNX").history(period="5d")
+        if not tnx.empty:
+            val = tnx["Close"].iloc[-1]
+            result["tnx"] = round(val, 2)
+            if val > 5.0:
+                result["tnx_desc"] = "Elevated — tightening conditions, pressure on growth stocks"
+            elif val > 4.0:
+                result["tnx_desc"] = "Above average — moderate headwind for equity valuations"
+            elif val > 3.0:
+                result["tnx_desc"] = "Neutral range"
+            else:
+                result["tnx_desc"] = "Low rates — tailwind for equities"
+    except Exception:
+        pass
+    try:
+        vix = yf.Ticker("^VIX").history(period="5d")
+        if not vix.empty:
+            val = vix["Close"].iloc[-1]
+            result["vix"] = round(val, 2)
+            if val > 30:
+                result["vix_desc"] = "High fear — market stressed, potential opportunity if contrarian"
+            elif val > 20:
+                result["vix_desc"] = "Elevated uncertainty — cautious positioning warranted"
+            elif val > 15:
+                result["vix_desc"] = "Normal volatility"
+            else:
+                result["vix_desc"] = "Calm markets — complacency risk"
+    except Exception:
+        pass
+    return result
+
+
 @st.cache_data(show_spinner=False, ttl="12h")
 def fetch_fundamentals_bulk(tickers: list[str]) -> pd.DataFrame:
     fields = [
@@ -78,12 +116,13 @@ def fetch_fundamentals_bulk(tickers: list[str]) -> pd.DataFrame:
         "priceToSalesTrailing12Months", "pegRatio",
         "dividendYield", "payoutRatio",
         "returnOnEquity", "returnOnAssets",
-        "profitMargins", "operatingMargins",
+        "profitMargins", "operatingMargins", "grossMargins",
         "revenueGrowth", "earningsGrowth",
         "debtToEquity", "currentRatio",
         "freeCashflow", "operatingCashflow",
         "enterpriseValue", "totalRevenue", "ebitda",
         "beta", "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "currentPrice",
+        "targetMeanPrice", "recommendationMean", "numberOfAnalystOpinions",
     ]
     rows = []
     for sym in tickers:

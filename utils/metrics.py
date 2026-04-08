@@ -114,269 +114,421 @@ def monthly_returns_table(prices: pd.Series) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Signal engine — composite quantitative score → Buy / Hold / Sell
-# Now sector-relative: valuation scored vs sector medians, not fixed numbers.
+# Signal engine v2 — 5-dimension composite score → Buy / Hold / Sell
+#
+# Key changes from v1:
+#   • Dropped P/B (meaningless for buyback-heavy companies like AAPL)
+#   • Added forward P/E and FCF yield to valuation
+#   • Sector-relative scoring uses smooth sigmoid instead of hard buckets
+#   • Quality: capped ROE sensitivity at 50%, dropped current ratio, added gross margin
+#   • NEW 5th dimension: Consensus (analyst target price upside + recommendation)
+#   • Rebalanced weights: Val 20%, Quality 25%, Momentum 15%, Risk 20%, Consensus 20%
+#   • Lower signal thresholds: Buy ≥ 62, Hold ≥ 40, Sell < 40
 # ---------------------------------------------------------------------------
 
-# Sector median fundamentals (fallback when live medians unavailable).
-# Updated from S&P 500 screener data April 2026.
+# Sector median fundamentals (trailing P/E, forward P/E, EV/EBITDA).
+# Updated from S&P 500 data April 2026.
 SECTOR_MEDIANS: dict = {
-    "Technology":             {"pe": 22.2, "pb": 4.9, "ev": 14.0},
-    "Financial Services":     {"pe": 13.9, "pb": 2.0, "ev": 12.6},
-    "Healthcare":             {"pe": 24.9, "pb": 3.2, "ev": 15.2},
-    "Industrials":            {"pe": 26.4, "pb": 4.1, "ev": 15.7},
-    "Consumer Cyclical":      {"pe": 27.2, "pb": 5.0, "ev": 16.3},
-    "Consumer Defensive":     {"pe": 19.6, "pb": 4.2, "ev": 14.2},
-    "Energy":                 {"pe": 19.3, "pb": 2.7, "ev": 10.4},
-    "Utilities":              {"pe": 23.9, "pb": 2.7, "ev": 14.8},
-    "Communication Services": {"pe": 13.2, "pb": 2.0, "ev":  9.1},
-    "Real Estate":            {"pe": 21.7, "pb": 2.5, "ev": 17.1},
-    "Basic Materials":        {"pe": 25.3, "pb": 3.7, "ev": 14.1},
+    "Technology":             {"tpe": 28.0, "fpe": 24.0, "ev": 20.0},
+    "Financial Services":     {"tpe": 14.0, "fpe": 12.0, "ev": 12.0},
+    "Healthcare":             {"tpe": 25.0, "fpe": 20.0, "ev": 15.0},
+    "Industrials":            {"tpe": 22.0, "fpe": 19.0, "ev": 15.0},
+    "Consumer Cyclical":      {"tpe": 22.0, "fpe": 18.0, "ev": 14.0},
+    "Consumer Defensive":     {"tpe": 22.0, "fpe": 19.0, "ev": 14.0},
+    "Energy":                 {"tpe": 14.0, "fpe": 12.0, "ev":  8.0},
+    "Utilities":              {"tpe": 20.0, "fpe": 17.0, "ev": 13.0},
+    "Communication Services": {"tpe": 18.0, "fpe": 15.0, "ev": 11.0},
+    "Real Estate":            {"tpe": 35.0, "fpe": 30.0, "ev": 20.0},
+    "Basic Materials":        {"tpe": 18.0, "fpe": 15.0, "ev": 10.0},
 }
-_DEFAULT_MEDIANS = {"pe": 21.0, "pb": 3.0, "ev": 14.0}
+_DEFAULT_MEDIANS = {"tpe": 21.0, "fpe": 18.0, "ev": 14.0}
 
 
-def _score_vs_median(value: float, median: float) -> int:
-    """Score a valuation metric relative to its sector median.
-    Lower than median = cheaper = higher score."""
+def _smooth_score(value: float, median: float, lower_is_better: bool = True) -> float:
+    """Smooth sigmoid-style scoring vs sector median. Returns 0-100.
+    Uses a continuous curve so small changes don't cause big score jumps."""
     if median <= 0:
-        return 50
+        return 50.0
     ratio = value / median
-    if ratio < 0.60:
-        return 100
-    elif ratio < 0.85:
-        return 75
-    elif ratio < 1.10:
-        return 50
-    elif ratio < 1.40:
-        return 30
+    if lower_is_better:
+        # ratio < 1 = cheap = high score; ratio > 1 = expensive = low score
+        # Sigmoid centered at ratio=1, steepness tuned so 0.6x→~90, 1.5x→~15
+        x = (1.0 - ratio) * 4.0  # scale factor controls steepness
     else:
-        return 10
+        # Higher is better (e.g., margins)
+        x = (ratio - 1.0) * 4.0
+    # Sigmoid: maps x ∈ (-∞, ∞) → (0, 100)
+    import math
+    try:
+        score = 100.0 / (1.0 + math.exp(-x))
+    except OverflowError:
+        score = 100.0 if x > 0 else 0.0
+    return round(max(5.0, min(95.0, score)), 1)  # clamp to [5, 95]
 
 
 def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None) -> dict:
     """
-    Score a stock 0–100 across four dimensions, then map to a signal.
-    Valuation is now SECTOR-RELATIVE — scored vs sector median, not absolute thresholds.
-    Returns {"signal", "score", "breakdown", "why"}.
+    Score a stock 0–100 across five dimensions, then map to Buy / Hold / Sell.
+
+    Dimensions & weights:
+        Valuation  20%  — trailing P/E, forward P/E, EV/EBITDA, FCF yield (sector-relative)
+        Quality    25%  — ROE (capped), profit margin, gross margin, D/E
+        Momentum   15%  — 52w position, total return, earnings growth, revenue growth
+        Risk       20%  — Sharpe, max drawdown, beta, alpha
+        Consensus  20%  — analyst target upside %, recommendation mean
+
+    Returns {"signal", "score", "breakdown", "why", "reasons", "weights"}.
     """
     scores = {}
-    reasons: dict[str, str] = {}  # per-dimension plain-English explanation
+    reasons: dict[str, str] = {}
+    weights = {
+        "Valuation": 0.20,
+        "Quality": 0.25,
+        "Momentum": 0.15,
+        "Risk": 0.20,
+        "Consensus": 0.20,
+    }
 
     sector = info.get("sector", "")
     med = SECTOR_MEDIANS.get(sector, _DEFAULT_MEDIANS)
 
-    # --- 1. VALUATION (sector-relative, 0-100, higher = cheaper) ---
-    val_points = 0
-    val_count = 0
+    # ── 1. VALUATION (sector-relative, 0-100, lower multiples = higher score) ──
+    val_scores = []
     val_notes = []
 
-    pe = info.get("trailingPE")
-    if pe and pe > 0:
-        val_count += 1
-        s = _score_vs_median(pe, med["pe"])
-        val_points += s
-        if s >= 75:
-            val_notes.append(f"P/E ({pe:.1f}) is cheap vs {sector or 'market'} median ({med['pe']:.1f})")
-        elif s <= 30:
-            val_notes.append(f"P/E ({pe:.1f}) is expensive vs {sector or 'market'} median ({med['pe']:.1f})")
+    # Trailing P/E
+    tpe = info.get("trailingPE")
+    if tpe and 0 < tpe < 500:
+        s = _smooth_score(tpe, med["tpe"], lower_is_better=True)
+        val_scores.append(s)
+        if s >= 65:
+            val_notes.append(f"trailing P/E ({tpe:.1f}) looks cheap vs {sector or 'market'} median ({med['tpe']:.0f})")
+        elif s <= 35:
+            val_notes.append(f"trailing P/E ({tpe:.1f}) is rich vs {sector or 'market'} median ({med['tpe']:.0f})")
 
-    pb = info.get("priceToBook")
-    if pb and pb > 0:
-        val_count += 1
-        s = _score_vs_median(pb, med["pb"])
-        val_points += s
+    # Forward P/E (weighted slightly more — forward-looking)
+    fpe = info.get("forwardPE")
+    if fpe and 0 < fpe < 500:
+        s = _smooth_score(fpe, med["fpe"], lower_is_better=True)
+        val_scores.append(s)
+        val_scores.append(s)  # double-counted = 2x weight within valuation
+        if s >= 65:
+            val_notes.append(f"forward P/E ({fpe:.1f}) suggests earnings growth will compress valuation")
 
+    # EV/EBITDA
     ev_ebitda = info.get("enterpriseToEbitda")
-    if ev_ebitda and ev_ebitda > 0:
-        val_count += 1
-        s = _score_vs_median(ev_ebitda, med["ev"])
-        val_points += s
-        if s >= 75:
-            val_notes.append(f"EV/EBITDA ({ev_ebitda:.1f}) is below sector median ({med['ev']:.1f})")
+    if ev_ebitda and 0 < ev_ebitda < 200:
+        s = _smooth_score(ev_ebitda, med["ev"], lower_is_better=True)
+        val_scores.append(s)
 
-    scores["Valuation"] = val_points / val_count if val_count > 0 else 50
+    # FCF Yield = freeCashflow / marketCap (higher = cheaper = better)
+    fcf = info.get("freeCashflow")
+    mcap = info.get("marketCap")
+    if fcf and mcap and mcap > 0:
+        fcf_yield = fcf / mcap
+        # Score: >8% = excellent, ~4% = average, <2% = poor
+        if fcf_yield > 0.08:
+            fcf_s = 90.0
+        elif fcf_yield > 0.05:
+            fcf_s = 75.0
+        elif fcf_yield > 0.03:
+            fcf_s = 60.0
+        elif fcf_yield > 0.01:
+            fcf_s = 40.0
+        elif fcf_yield > 0:
+            fcf_s = 25.0
+        else:
+            fcf_s = 10.0  # negative FCF
+        val_scores.append(fcf_s)
+        if fcf_yield > 0.05:
+            val_notes.append(f"strong {fcf_yield*100:.1f}% FCF yield")
+        elif fcf_yield <= 0:
+            val_notes.append("negative free cash flow")
+
+    scores["Valuation"] = sum(val_scores) / len(val_scores) if val_scores else 50.0
     reasons["Valuation"] = "; ".join(val_notes) if val_notes else (
-        "Valuation roughly in line with sector peers" if scores["Valuation"] >= 40
-        else "Looks expensive relative to sector peers"
+        "valuation roughly in line with sector peers" if scores["Valuation"] >= 40
+        else "looks expensive relative to sector peers"
     )
 
-    # --- 2. QUALITY (0-100) ---
-    qual_points = 0
-    qual_count = 0
+    # ── 2. QUALITY (0-100) ─────────────────────────────────────────────────────
+    qual_scores = []
     qual_notes = []
 
+    # ROE — capped at 50% to avoid rewarding financial engineering (buybacks)
     roe = info.get("returnOnEquity")
     if roe is not None:
-        qual_count += 1
-        if roe > 0.25:
-            qual_points += 100; qual_notes.append(f"ROE is excellent ({roe*100:.0f}%)")
-        elif roe > 0.15:
-            qual_points += 75
-        elif roe > 0.08:
-            qual_points += 45
+        effective_roe = min(roe, 0.50)  # cap at 50%
+        # 15% = decent baseline
+        if effective_roe > 0.25:
+            qs = 90.0
+        elif effective_roe > 0.15:
+            qs = 70.0
+        elif effective_roe > 0.08:
+            qs = 50.0
+        elif effective_roe > 0:
+            qs = 30.0
         else:
-            qual_points += 10; qual_notes.append(f"ROE is weak ({roe*100:.0f}%)")
+            qs = 10.0
+        qual_scores.append(qs)
+        if effective_roe > 0.20:
+            qual_notes.append(f"ROE is strong ({roe*100:.0f}%)")
+        elif effective_roe < 0.05:
+            qual_notes.append(f"ROE is weak ({roe*100:.0f}%)")
 
+    # Profit margin
     margin = info.get("profitMargins")
     if margin is not None:
-        qual_count += 1
-        if margin > 0.20:
-            qual_points += 100; qual_notes.append(f"strong {margin*100:.0f}% profit margins")
-        elif margin > 0.10:
-            qual_points += 70
+        if margin > 0.25:
+            ms = 90.0
+        elif margin > 0.15:
+            ms = 75.0
+        elif margin > 0.08:
+            ms = 55.0
         elif margin > 0.03:
-            qual_points += 40
+            ms = 35.0
+        elif margin > 0:
+            ms = 20.0
         else:
-            qual_points += 10; qual_notes.append(f"thin {margin*100:.1f}% profit margins")
+            ms = 5.0
+        qual_scores.append(ms)
+        if margin > 0.20:
+            qual_notes.append(f"strong {margin*100:.0f}% profit margins")
+        elif margin < 0.03:
+            qual_notes.append(f"thin {margin*100:.1f}% profit margins")
 
+    # Gross margin (competitive moat indicator)
+    gross_margin = info.get("grossMargins")
+    if gross_margin is not None:
+        if gross_margin > 0.60:
+            gms = 90.0
+        elif gross_margin > 0.40:
+            gms = 70.0
+        elif gross_margin > 0.25:
+            gms = 50.0
+        elif gross_margin > 0.15:
+            gms = 30.0
+        else:
+            gms = 15.0
+        qual_scores.append(gms)
+        if gross_margin > 0.55:
+            qual_notes.append(f"high {gross_margin*100:.0f}% gross margins suggest pricing power")
+
+    # Debt/Equity — sector-aware (financials naturally run higher)
     de = info.get("debtToEquity")
     if de is not None:
-        qual_count += 1
-        if de < 50:
-            qual_points += 100
-        elif de < 100:
-            qual_points += 70
-        elif de < 200:
-            qual_points += 40
+        de_threshold = 200 if sector == "Financial Services" else 100
+        if de < de_threshold * 0.5:
+            des = 85.0
+        elif de < de_threshold:
+            des = 65.0
+        elif de < de_threshold * 2:
+            des = 40.0
         else:
-            qual_points += 10; qual_notes.append(f"high leverage (D/E {de:.0f})")
+            des = 15.0
+        qual_scores.append(des)
+        if de > de_threshold * 1.5:
+            qual_notes.append(f"elevated leverage (D/E {de:.0f})")
 
-    cr = info.get("currentRatio")
-    if cr is not None:
-        qual_count += 1
-        if cr > 2:
-            qual_points += 100
-        elif cr > 1.5:
-            qual_points += 70
-        elif cr > 1:
-            qual_points += 40
-        else:
-            qual_points += 10
+    scores["Quality"] = sum(qual_scores) / len(qual_scores) if qual_scores else 50.0
+    reasons["Quality"] = "; ".join(qual_notes) if qual_notes else "quality metrics are average"
 
-    scores["Quality"] = qual_points / qual_count if qual_count > 0 else 50
-    reasons["Quality"] = "; ".join(qual_notes) if qual_notes else "Quality metrics are average"
-
-    # --- 3. MOMENTUM (0-100) ---
-    mom_points = 0
-    mom_count = 0
+    # ── 3. MOMENTUM (0-100) ────────────────────────────────────────────────────
+    mom_scores = []
     mom_notes = []
 
+    # 52-week range position
     price = info.get("currentPrice")
     high52 = info.get("fiftyTwoWeekHigh")
     low52 = info.get("fiftyTwoWeekLow")
     if price and high52 and low52 and high52 != low52:
-        mom_count += 1
         position = (price - low52) / (high52 - low52)
-        if position > 0.8:
-            mom_points += 80; mom_notes.append("trading near 52-week high")
-        elif position > 0.5:
-            mom_points += 60
-        elif position > 0.3:
-            mom_points += 50
-        else:
-            mom_points += 30; mom_notes.append(f"{((high52 - price) / high52 * 100):.0f}% below 52-week high")
+        # Near highs = strong momentum
+        pos_score = 20.0 + position * 70.0  # maps 0→20, 1→90
+        mom_scores.append(min(90.0, pos_score))
+        if position > 0.85:
+            mom_notes.append("trading near 52-week high")
+        elif position < 0.30:
+            pct_off = (high52 - price) / high52 * 100
+            mom_notes.append(f"{pct_off:.0f}% below 52-week high")
 
+    # Total return over analysis period
     tr = metrics.get("total_return", 0)
-    mom_count += 1
-    if tr > 20:
-        mom_points += 85; mom_notes.append(f"strong {tr:.0f}% return over period")
+    if tr > 30:
+        mom_scores.append(90.0)
+        mom_notes.append(f"strong {tr:.0f}% return")
+    elif tr > 15:
+        mom_scores.append(75.0)
     elif tr > 5:
-        mom_points += 65
+        mom_scores.append(60.0)
     elif tr > -5:
-        mom_points += 45
+        mom_scores.append(45.0)
     elif tr > -15:
-        mom_points += 25; mom_notes.append(f"negative {tr:.0f}% return dragging momentum")
+        mom_scores.append(25.0)
+        mom_notes.append(f"{tr:.0f}% return dragging momentum")
     else:
-        mom_points += 10; mom_notes.append(f"steep {tr:.0f}% decline")
+        mom_scores.append(10.0)
+        mom_notes.append(f"steep {tr:.0f}% decline")
 
+    # Earnings growth
     eg = info.get("earningsGrowth")
     if eg is not None:
-        mom_count += 1
-        if eg > 0.20:
-            mom_points += 90; mom_notes.append(f"earnings growing {eg*100:.0f}%")
-        elif eg > 0.05:
-            mom_points += 65
-        elif eg > -0.05:
-            mom_points += 40
+        if eg > 0.25:
+            mom_scores.append(90.0)
+            mom_notes.append(f"earnings growing {eg*100:.0f}%")
+        elif eg > 0.10:
+            mom_scores.append(70.0)
+        elif eg > 0:
+            mom_scores.append(55.0)
+        elif eg > -0.10:
+            mom_scores.append(35.0)
         else:
-            mom_points += 15; mom_notes.append(f"earnings declining {eg*100:.0f}%")
+            mom_scores.append(15.0)
+            mom_notes.append(f"earnings declining {eg*100:.0f}%")
 
-    scores["Momentum"] = mom_points / mom_count if mom_count > 0 else 50
-    reasons["Momentum"] = "; ".join(mom_notes) if mom_notes else "Momentum is neutral"
+    # Revenue growth
+    rg = info.get("revenueGrowth")
+    if rg is not None:
+        if rg > 0.20:
+            mom_scores.append(85.0)
+        elif rg > 0.10:
+            mom_scores.append(70.0)
+        elif rg > 0.03:
+            mom_scores.append(55.0)
+        elif rg > -0.03:
+            mom_scores.append(40.0)
+        else:
+            mom_scores.append(20.0)
 
-    # --- 4. RISK (0-100, lower risk = higher score) ---
-    risk_points = 0
-    risk_count = 0
+    scores["Momentum"] = sum(mom_scores) / len(mom_scores) if mom_scores else 50.0
+    reasons["Momentum"] = "; ".join(mom_notes) if mom_notes else "momentum is neutral"
+
+    # ── 4. RISK (0-100, lower risk = higher score) ────────────────────────────
+    risk_scores = []
     risk_notes = []
 
+    # Sharpe ratio
     sharpe = metrics.get("sharpe", 0)
-    risk_count += 1
     if sharpe > 1.5:
-        risk_points += 95; risk_notes.append(f"excellent risk-adjusted returns (Sharpe {sharpe:.2f})")
-    elif sharpe > 0.8:
-        risk_points += 70
-    elif sharpe > 0.3:
-        risk_points += 45
+        risk_scores.append(90.0)
+        risk_notes.append(f"excellent risk-adjusted returns (Sharpe {sharpe:.2f})")
+    elif sharpe > 1.0:
+        risk_scores.append(75.0)
+    elif sharpe > 0.5:
+        risk_scores.append(55.0)
     elif sharpe > 0:
-        risk_points += 25
+        risk_scores.append(35.0)
     else:
-        risk_points += 10; risk_notes.append(f"poor risk-adjusted returns (Sharpe {sharpe:.2f})")
+        risk_scores.append(15.0)
+        risk_notes.append(f"poor risk-adjusted returns (Sharpe {sharpe:.2f})")
 
+    # Max drawdown
     mdd = abs(metrics.get("max_drawdown", 0))
-    risk_count += 1
     if mdd < 10:
-        risk_points += 90
+        risk_scores.append(85.0)
     elif mdd < 20:
-        risk_points += 65
-    elif mdd < 35:
-        risk_points += 40
+        risk_scores.append(65.0)
+    elif mdd < 30:
+        risk_scores.append(45.0)
+    elif mdd < 40:
+        risk_scores.append(25.0)
     else:
-        risk_points += 15; risk_notes.append(f"deep {mdd:.0f}% max drawdown")
+        risk_scores.append(10.0)
+        risk_notes.append(f"deep {mdd:.0f}% max drawdown")
 
+    # Beta
     beta_val = info.get("beta")
     if beta_val is not None:
-        risk_count += 1
-        if 0.5 <= beta_val <= 1.2:
-            risk_points += 75
-        elif beta_val < 0.5:
-            risk_points += 60
-        elif beta_val <= 1.5:
-            risk_points += 50
+        if 0.7 <= beta_val <= 1.3:
+            risk_scores.append(70.0)
+        elif 0.4 <= beta_val <= 1.5:
+            risk_scores.append(50.0)
+        elif beta_val < 0.4:
+            risk_scores.append(55.0)  # very low beta is fine
         else:
-            risk_points += 20; risk_notes.append(f"high beta ({beta_val:.2f}) amplifies market swings")
+            risk_scores.append(20.0)
+            risk_notes.append(f"high beta ({beta_val:.2f}) amplifies market swings")
 
+    # Alpha vs benchmark
     if bench_metrics and "alpha" in bench_metrics:
-        risk_count += 1
         alpha = bench_metrics["alpha"]
-        if alpha > 10:
-            risk_points += 90; risk_notes.append(f"strong alpha ({alpha:.1f}%) vs benchmark")
+        if alpha > 15:
+            risk_scores.append(90.0)
+            risk_notes.append(f"strong alpha ({alpha:.1f}%) vs benchmark")
+        elif alpha > 5:
+            risk_scores.append(72.0)
         elif alpha > 0:
-            risk_points += 65
+            risk_scores.append(55.0)
         elif alpha > -10:
-            risk_points += 35
+            risk_scores.append(35.0)
         else:
-            risk_points += 10; risk_notes.append(f"negative alpha ({alpha:.1f}%) vs benchmark")
+            risk_scores.append(15.0)
+            risk_notes.append(f"negative alpha ({alpha:.1f}%) vs benchmark")
 
-    scores["Risk"] = risk_points / risk_count if risk_count > 0 else 50
-    reasons["Risk"] = "; ".join(risk_notes) if risk_notes else "Risk profile is moderate"
+    scores["Risk"] = sum(risk_scores) / len(risk_scores) if risk_scores else 50.0
+    reasons["Risk"] = "; ".join(risk_notes) if risk_notes else "risk profile is moderate"
 
-    # --- COMPOSITE (weighted) ---
-    composite = (
-        0.30 * scores["Valuation"]
-        + 0.25 * scores["Quality"]
-        + 0.20 * scores["Momentum"]
-        + 0.25 * scores["Risk"]
-    )
+    # ── 5. CONSENSUS (0-100, NEW dimension) ───────────────────────────────────
+    cons_scores = []
+    cons_notes = []
 
-    if composite >= 68:
+    # Analyst target price upside
+    target = info.get("targetMeanPrice")
+    cur = info.get("currentPrice")
+    if target and cur and cur > 0:
+        upside = (target / cur - 1) * 100
+        # Map upside to score: >30% = 90, ~15% = 70, ~0% = 40, <-10% = 15
+        if upside > 30:
+            cs = 90.0
+        elif upside > 15:
+            cs = 75.0
+        elif upside > 5:
+            cs = 60.0
+        elif upside > -5:
+            cs = 40.0
+        elif upside > -15:
+            cs = 25.0
+        else:
+            cs = 10.0
+        cons_scores.append(cs)
+        cons_scores.append(cs)  # double-weight upside (most actionable)
+        if upside > 20:
+            cons_notes.append(f"analysts see {upside:.0f}% upside to ${target:.0f}")
+        elif upside < -5:
+            cons_notes.append(f"analysts see {upside:.0f}% downside")
+
+    # Recommendation mean (1 = Strong Buy, 5 = Strong Sell)
+    rec = info.get("recommendationMean")
+    if rec and 1 <= rec <= 5:
+        # 1→95, 2→75, 3→50, 4→25, 5→5
+        rec_score = max(5.0, min(95.0, 95.0 - (rec - 1) * 22.5))
+        cons_scores.append(rec_score)
+        rec_labels = {1: "Strong Buy", 2: "Buy", 3: "Hold", 4: "Sell", 5: "Strong Sell"}
+        nearest = rec_labels.get(round(rec), f"{rec:.1f}")
+        if rec <= 2.0:
+            cons_notes.append(f"Wall Street consensus is {nearest} ({rec:.1f})")
+        elif rec >= 3.5:
+            cons_notes.append(f"Wall Street consensus is cautious ({nearest}, {rec:.1f})")
+
+    # Number of analysts (confidence weight — more coverage = more reliable)
+    n_analysts = info.get("numberOfAnalystOpinions")
+    if n_analysts is not None and n_analysts < 5:
+        cons_notes.append(f"only {n_analysts} analysts cover this stock (low confidence)")
+
+    scores["Consensus"] = sum(cons_scores) / len(cons_scores) if cons_scores else 50.0
+    reasons["Consensus"] = "; ".join(cons_notes) if cons_notes else "limited analyst coverage"
+
+    # ── COMPOSITE (weighted) ──────────────────────────────────────────────────
+    composite = sum(weights[d] * scores[d] for d in weights)
+
+    if composite >= 62:
         signal = "Buy"
-    elif composite >= 45:
+    elif composite >= 40:
         signal = "Hold"
     else:
         signal = "Sell"
 
-    # --- WHY (plain-English summary) ---
+    # ── WHY (plain-English summary) ───────────────────────────────────────────
     dims = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     best = dims[0]
     worst = dims[-1]
@@ -391,6 +543,7 @@ def compute_signal(info: dict, metrics: dict, bench_metrics: dict | None = None)
         "signal": signal,
         "score": round(composite, 1),
         "breakdown": scores,
+        "weights": weights,
         "why": why,
         "reasons": reasons,
     }
