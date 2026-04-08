@@ -359,6 +359,29 @@ with tab_returns:
     else:
         st.altair_chart(vol_area + vol_line, width="stretch")
 
+    # Return distribution histogram
+    st.divider()
+    st.subheader("Return Distribution")
+    st.caption("If bars extend further left than the orange curve, the stock has fatter downside tails than normal.")
+    dist_df = returns.reset_index()
+    dist_df.columns = ["Date", "Daily Return (%)"]
+    avg, std = metrics["avg_daily"], metrics["std_daily"]
+
+    hist = alt.Chart(dist_df).mark_bar(opacity=0.75).encode(
+        alt.X("Daily Return (%):Q", bin=alt.Bin(maxbins=50)), alt.Y("count()"), tooltip=["count()"]
+    ).properties(height=350)
+
+    x_rng = np.linspace(returns.min(), returns.max(), 200)
+    npdf = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_rng - avg) / std) ** 2)
+    bw = (returns.max() - returns.min()) / 50
+    ndf = pd.DataFrame({"Daily Return (%)": x_rng, "Normal": npdf * len(returns) * bw})
+    nline = alt.Chart(ndf).mark_line(color="orange", strokeDash=[6,3], strokeWidth=2).encode(
+        x="Daily Return (%):Q", y=alt.Y("Normal:Q", title="Frequency")
+    )
+    mrule = alt.Chart(pd.DataFrame({"x": [avg]})).mark_rule(color="red", strokeDash=[4,4], strokeWidth=2).encode(x="x:Q")
+    st.altair_chart(hist + nline + mrule, width="stretch")
+    st.caption("Orange = normal distribution  ·  Red = mean return")
+
 # ========================== MONTHLY HEATMAP =================================
 with tab_monthly:
     st.subheader("Monthly Returns Heatmap")
