@@ -8,7 +8,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
-from utils.data import get_price_history
+from utils.data import get_price_history_batch
 from utils.metrics import compute_return_metrics, metric_card
 
 st.set_page_config(page_title="Portfolio Risk — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
@@ -30,26 +30,32 @@ with st.sidebar:
     total_w = sum(weights)
     if total_w != 100:
         st.warning(f"Weights sum to {total_w}%.")
-    horizon_map = {"3 Months":"3mo","6 Months":"6mo","1 Year":"1y","2 Years":"2y","5 Years":"5y"}
-    horizon = st.selectbox("Time horizon", list(horizon_map.keys()), index=2)
+    horizon_map = {"3M": "3mo", "6M": "6mo", "1Y": "1y", "2Y": "2y", "5Y": "5y"}
+    horizon = st.pills("Time horizon", list(horizon_map.keys()), default="1Y")
+    if not horizon:
+        horizon = "1Y"
     rf = st.number_input("Risk-free rate", 0.0, 0.20, 0.05, 0.01, format="%.2f")
+    st.caption("Default 5% approximates the current short-term Treasury yield.")
 
 if total_w != 100 or len(tickers) < 2:
-    st.info("Configure portfolio in sidebar (weights must sum to 100%).")
+    if total_w != 100:
+        st.warning(f"Weights sum to **{total_w}%** — adjust in the sidebar so they total 100%.")
+    else:
+        st.info("Add at least 2 holdings in the sidebar.")
     st.stop()
 
 w_arr = np.array(weights) / 100
-all_p, errs = {}, []
 with st.spinner("Fetching…"):
-    for t in tickers:
-        h = get_price_history(t, horizon_map[horizon])
-        if h.empty: errs.append(t)
-        else: all_p[t] = h["Close"]
+    pdf = get_price_history_batch(tickers, horizon_map[horizon])
+if pdf.empty:
+    st.error("Could not fetch data. Try again.")
+    st.stop()
+errs = [t for t in tickers if t not in pdf.columns or pdf[t].isna().all()]
 if errs:
     st.error(f"No data for: {', '.join(errs)}")
     st.stop()
 
-pdf = pd.DataFrame(all_p).dropna()
+pdf = pdf[tickers].dropna()
 if len(pdf) < 20:
     st.error("Not enough overlapping data.")
     st.stop()

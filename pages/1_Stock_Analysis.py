@@ -29,10 +29,12 @@ with st.sidebar:
     benchmark = st.selectbox("Benchmark", ["SPY", "QQQ"], index=0)
 
     horizon_map = {
-        "3 Months": "3mo", "6 Months": "6mo", "1 Year": "1y",
-        "2 Years": "2y", "5 Years": "5y", "Custom range": "custom",
+        "3M": "3mo", "6M": "6mo", "1Y": "1y",
+        "2Y": "2y", "5Y": "5y", "Custom": "custom",
     }
-    horizon = st.selectbox("Time horizon", list(horizon_map.keys()), index=2)
+    horizon = st.pills("Time horizon", list(horizon_map.keys()), default="1Y")
+    if not horizon:
+        horizon = "1Y"
     use_custom = horizon_map[horizon] == "custom"
     custom_start = custom_end = None
     if use_custom:
@@ -44,6 +46,7 @@ with st.sidebar:
 
     with st.expander("Settings"):
         rf = st.number_input("Risk-free rate", 0.0, 0.20, 0.05, 0.01, format="%.2f")
+        st.caption("Default 5% approximates the current short-term Treasury yield.")
         roll_win = st.selectbox("Rolling vol window (days)", [21, 30, 60], index=1)
 
 if not ticker:
