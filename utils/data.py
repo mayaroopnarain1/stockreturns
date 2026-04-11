@@ -109,6 +109,47 @@ def fetch_macro_context() -> dict:
     return result
 
 
+# Sector → SPDR sector ETF mapping (for sector average comparisons)
+SECTOR_ETFS: dict[str, str] = {
+    "Technology": "XLK",
+    "Financial Services": "XLF",
+    "Healthcare": "XLV",
+    "Industrials": "XLI",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Energy": "XLE",
+    "Utilities": "XLU",
+    "Communication Services": "XLC",
+    "Real Estate": "XLRE",
+    "Basic Materials": "XLB",
+}
+
+
+@st.cache_data(show_spinner=False, ttl="6h")
+def get_price_history_batch(tickers: list[str], period: str) -> pd.DataFrame:
+    """Fetch close prices for multiple tickers in a single API call.
+    Returns a DataFrame with Date index and one column per ticker."""
+    try:
+        tickers_str = " ".join(tickers)
+        obj = yf.Tickers(tickers_str)
+        data = obj.history(period=period, auto_adjust=True)
+        if data is None or data.empty:
+            return pd.DataFrame()
+        close = data["Close"]
+        # yf.Tickers returns MultiIndex columns for single ticker
+        if isinstance(close, pd.Series):
+            close = close.to_frame(tickers[0])
+        return close
+    except Exception:
+        # Fallback: fetch individually
+        frames = {}
+        for t in tickers:
+            h = get_price_history(t, period)
+            if not h.empty:
+                frames[t] = h["Close"]
+        return pd.DataFrame(frames) if frames else pd.DataFrame()
+
+
 @st.cache_data(show_spinner=False, ttl="12h")
 def fetch_fundamentals_bulk(tickers: list[str]) -> pd.DataFrame:
     fields = [
