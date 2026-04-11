@@ -147,25 +147,34 @@ with tab_peer:
                     scale=alt.Scale(domain=color_domain, range=color_range),
                     legend=alt.Legend(orient="bottom"),
                 ),
-                alt.Tooltip(["Date:T", "Series:N", alt.Tooltip("Normalized:Q", format=".4f")]),
+                tooltip=["Date:T", "Series:N", alt.Tooltip("Normalized:Q", format=".4f")],
             ).properties(title=f"{ticker} vs peers & sector", height=300)
         )
 
-        # Delta chart: stock minus peer average
+        # Delta chart: stock minus peer average (split into pos/neg layers)
+        delta_raw = norm[ticker] - peer_avg
         delta_df = pd.DataFrame({
             "Date": norm.index,
-            "Delta": norm[ticker] - peer_avg,
+            "Delta": delta_raw,
         })
-        delta_chart = (
-            alt.Chart(delta_df).mark_area(opacity=0.5).encode(
-                alt.X("Date:T"),
-                alt.Y("Delta:Q"),
-                alt.Color(
-                    value="#2ecc71",
-                    condition=alt.condition(alt.datum.Delta < 0, alt.value("#e74c3c"), alt.value("#2ecc71")),
-                ),
-                alt.Tooltip(["Date:T", alt.Tooltip("Delta:Q", format=".4f")]),
-            ).properties(title=f"{ticker} minus peer avg", height=200)
+        delta_pos = delta_df.copy()
+        delta_pos.loc[delta_pos["Delta"] < 0, "Delta"] = 0
+        delta_neg = delta_df.copy()
+        delta_neg.loc[delta_neg["Delta"] > 0, "Delta"] = 0
+
+        base_x = alt.X("Date:T")
+        base_y = alt.Y("Delta:Q")
+        pos_area = alt.Chart(delta_pos).mark_area(opacity=0.5, color="#2ecc71").encode(
+            base_x, base_y, tooltip=["Date:T", alt.Tooltip("Delta:Q", format=".4f")]
+        )
+        neg_area = alt.Chart(delta_neg).mark_area(opacity=0.5, color="#e74c3c").encode(
+            base_x, base_y, tooltip=["Date:T", alt.Tooltip("Delta:Q", format=".4f")]
+        )
+        zero_rule = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
+            strokeDash=[4, 4], color="gray"
+        ).encode(y="y:Q")
+        delta_chart = (pos_area + neg_area + zero_rule).properties(
+            title=f"{ticker} minus peer avg", height=200
         )
 
         col_idx = i % NUM_COLS
