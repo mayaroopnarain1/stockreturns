@@ -39,14 +39,16 @@ with st.sidebar:
             st.rerun()
 
     _port_default = st.session_state.get("portfolio_tickers", ["AAPL", "MSFT", "GOOGL"])
+    _opts = sorted(set(SP500_TICKERS) | set(_port_default))
     tickers = st.multiselect(
         "Select stocks",
-        options=sorted(SP500_TICKERS),
+        options=_opts,
         default=_port_default,
         max_selections=30,
         accept_new_options=True,
         placeholder="Search or type tickers",
     )
+    st.caption("Not limited to S&P 500 — type any valid ticker.")
     tickers = [t.upper() for t in tickers]
 
     # Persist selected tickers so Compare Stocks can read them

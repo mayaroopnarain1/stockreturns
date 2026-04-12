@@ -9,7 +9,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from utils.data import get_price_history, get_price_history_dates, get_ticker_info, fetch_macro_context, SP500_TICKERS
 from utils.metrics import (
     compute_return_metrics, compute_benchmark_metrics, compute_signal,
@@ -18,72 +18,6 @@ from utils.metrics import (
 )
 
 st.set_page_config(page_title="Stock Analysis — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
-
-# ---------------------------------------------------------------------------
-# Investor Profile Onboarding
-# ---------------------------------------------------------------------------
-@st.dialog("Set Up Your Investor Profile", width="large")
-def _investor_profile_dialog():
-    st.markdown(
-        "StockLens tailors its recommendations to **your** investing style. "
-        "Answer three quick questions so the action engine knows how aggressive "
-        "or conservative to be."
-    )
-    st.markdown("---")
-
-    risk_col, goal_col, hor_col = st.columns(3)
-    with risk_col:
-        st.markdown("**Risk Tolerance**")
-        risk = st.radio(
-            "How much volatility can you stomach?",
-            ["Conservative", "Moderate", "Aggressive"],
-            index=1,
-            label_visibility="collapsed",
-            captions=[
-                "Preserve capital first. Smaller swings.",
-                "Balanced risk/reward. The default.",
-                "Maximize upside. Can handle big drawdowns.",
-            ],
-        )
-    with goal_col:
-        st.markdown("**Investment Goal**")
-        goal = st.radio(
-            "What are you optimizing for?",
-            ["Growth", "Income", "Balanced"],
-            index=2,
-            label_visibility="collapsed",
-            captions=[
-                "Capital appreciation. Dividends optional.",
-                "Steady cash flow from dividends.",
-                "A mix of growth and income.",
-            ],
-        )
-    with hor_col:
-        st.markdown("**Time Horizon**")
-        horizon = st.radio(
-            "How long do you plan to hold?",
-            ["Short-term", "Medium-term", "Long-term"],
-            index=1,
-            label_visibility="collapsed",
-            captions=[
-                "< 6 months. Active trading.",
-                "6 months – 3 years.",
-                "3+ years. Buy and hold.",
-            ],
-        )
-
-    st.markdown("---")
-    if st.button("Save Profile", type="primary", use_container_width=True):
-        st.session_state["investor_profile"] = {
-            "risk_tolerance": risk.lower().split("-")[0],  # "conservative", "moderate", "aggressive"
-            "goal": goal.lower(),
-            "horizon": horizon.lower().split("-")[0],  # "short", "medium", "long"
-        }
-        st.rerun()
-
-# Show onboarding if no profile exists yet
-if "investor_profile" not in st.session_state:
-    _investor_profile_dialog()
 
 st.title(":material/search: Stock Analysis")
 st.caption("Enter a ticker to get a personalized, prescriptive recommendation backed by data.")
@@ -94,14 +28,17 @@ st.caption("Enter a ticker to get a personalized, prescriptive recommendation ba
 with st.sidebar:
     _recent = st.session_state.get("recent_tickers", [])
     _analysis_default = [_recent[0]] if _recent else ["AAPL"]
+    # Build options list — include any default tickers that aren't in S&P 500
+    _opts = sorted(set(SP500_TICKERS) | set(_analysis_default))
     ticker_sel = st.multiselect(
         "Stock ticker",
-        options=sorted(SP500_TICKERS),
+        options=_opts,
         default=_analysis_default,
         max_selections=1,
         accept_new_options=True,
-        placeholder="Search or type a ticker",
+        placeholder="Search or type any ticker",
     )
+    st.caption("Not limited to S&P 500 — type any valid ticker symbol.")
     ticker = ticker_sel[0].upper() if ticker_sel else ""
     _saved_bench = st.session_state.get("shared_benchmark", "SPY")
     benchmark = st.selectbox("Benchmark", ["SPY", "QQQ"], index=["SPY", "QQQ"].index(_saved_bench) if _saved_bench in ["SPY", "QQQ"] else 0)
@@ -132,17 +69,38 @@ with st.sidebar:
         st.caption("Default 5% approximates the current short-term Treasury yield.")
         roll_win = st.selectbox("Rolling vol window (days)", [21, 30, 60], index=1)
 
-    # Investor profile badge
-    _profile = st.session_state.get("investor_profile", {})
-    if _profile:
-        _rt = _profile.get("risk_tolerance", "moderate").title()
-        _g = _profile.get("goal", "balanced").title()
-        _h = _profile.get("horizon", "medium").title()
-        st.divider()
-        st.caption(f"**Your Profile:** {_rt} · {_g} · {_h}-term")
-        if st.button("Change profile", use_container_width=True):
-            del st.session_state["investor_profile"]
-            st.rerun()
+    # Investor profile — inline, no popup
+    st.divider()
+    st.subheader("Investor Profile")
+    st.caption("Tailors the recommendation to your style.")
+    _risk_opts = ["Conservative", "Moderate", "Aggressive"]
+    _goal_opts = ["Growth", "Income", "Balanced"]
+    _hor_opts = ["Short-term", "Medium-term", "Long-term"]
+    _saved_profile = st.session_state.get("investor_profile", {})
+    _p_risk = st.selectbox(
+        "Risk tolerance",
+        _risk_opts,
+        index=_risk_opts.index(_saved_profile.get("risk_tolerance", "moderate").title())
+            if _saved_profile.get("risk_tolerance", "moderate").title() in _risk_opts else 1,
+    )
+    _p_goal = st.selectbox(
+        "Goal",
+        _goal_opts,
+        index=_goal_opts.index(_saved_profile.get("goal", "balanced").title())
+            if _saved_profile.get("goal", "balanced").title() in _goal_opts else 2,
+    )
+    _p_hor = st.selectbox(
+        "Time horizon",
+        _hor_opts,
+        index=_hor_opts.index(
+            next((h for h in _hor_opts if h.lower().startswith(_saved_profile.get("horizon", "medium"))), "Medium-term")
+        ) if _saved_profile else 1,
+    )
+    st.session_state["investor_profile"] = {
+        "risk_tolerance": _p_risk.lower(),
+        "goal": _p_goal.lower(),
+        "horizon": _p_hor.lower().split("-")[0],
+    }
 
 if not ticker:
     st.info("Enter a ticker in the sidebar.")
@@ -207,13 +165,14 @@ _profile = st.session_state.get("investor_profile", {
     "risk_tolerance": "moderate", "goal": "balanced", "horizon": "medium",
 })
 
-# Gather portfolio info for portfolio-aware recommendations
+# Gather portfolio info for portfolio-aware recommendations (lightweight —
+# only fetch sector for each holding, reuse cached info)
 _port_tickers = st.session_state.get("portfolio_tickers")
 _port_info = None
-if _port_tickers:
+if _port_tickers and len(_port_tickers) <= 30:
     _port_info = {}
     for _pt in _port_tickers:
-        _pi = get_ticker_info(_pt)
+        _pi = get_ticker_info(_pt)  # cached 6h
         if _pi:
             _port_info[_pt] = _pi
 
@@ -293,7 +252,6 @@ with consensus_col:
         st.caption(f"Based on {n_analysts} analyst{'s' if n_analysts > 1 else ''}")
 
 with earnings_col:
-    from datetime import datetime
     raw_earnings = info.get("earningsTimestamp") or info.get("earningsDate")
     earnings_dt = None
     if isinstance(raw_earnings, (int, float)) and raw_earnings > 0:

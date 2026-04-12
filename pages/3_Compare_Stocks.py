@@ -34,6 +34,7 @@ with st.sidebar:
         accept_new_options=True,
         placeholder="Search or type tickers to compare",
     )
+    st.caption("Not limited to S&P 500 — type any valid ticker.")
     tickers = [t.upper() for t in tickers]
     if len(tickers) < 2:
         st.warning("Pick at least 2 tickers.")
