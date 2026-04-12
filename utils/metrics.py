@@ -2,6 +2,9 @@
 """Shared metric computations and descriptions."""
 from __future__ import annotations
 
+import math
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 
@@ -159,7 +162,6 @@ def _smooth_score(value: float, median: float, lower_is_better: bool = True) -> 
         # Higher is better (e.g., margins)
         x = (ratio - 1.0) * 4.0
     # Sigmoid: maps x ∈ (-∞, ∞) → (0, 100)
-    import math
     try:
         score = 100.0 / (1.0 + math.exp(-x))
     except OverflowError:
@@ -679,8 +681,7 @@ def generate_prescription(
     reasoning_points = []
     warnings = []
 
-    # Volatility & drawdown info for entry strategy
-    max_dd = abs(signal_result["breakdown"].get("Risk", 50))
+    # Volatility & macro info for entry strategy
     vix = macro.get("vix") if macro else None
     tnx = macro.get("tnx") if macro else None
     beta_val = info.get("beta", 1.0)
@@ -781,7 +782,6 @@ def generate_prescription(
         warnings.append(f"VIX at {vix:.0f} signals elevated fear — expect wider price swings")
 
     # Earnings proximity warning
-    from datetime import datetime
     raw_earnings = info.get("earningsTimestamp") or info.get("earningsDate")
     earnings_dt = None
     if isinstance(raw_earnings, (int, float)) and raw_earnings > 0:
