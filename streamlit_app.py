@@ -29,6 +29,8 @@ if _recent:
     _rc_cols = st.columns(min(len(_recent), 5))
     for i, _t in enumerate(_recent[:5]):
         if _rc_cols[i].button(f"↩ {_t}", key=f"rc_{_t}", use_container_width=True):
+            # Move this ticker to front so Stock Analysis loads it
+            st.session_state["recent_tickers"] = [_t] + [x for x in _recent if x != _t][:9]
             st.switch_page("pages/1_Stock_Analysis.py")
 
 st.markdown("---")
