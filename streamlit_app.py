@@ -13,6 +13,26 @@ st.caption("Screen, analyze, and compare stocks — all in one place.")
 
 st.markdown("---")
 
+# Quick-start: popular tickers
+st.subheader("Quick Start")
+_popular = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "UNH", "V"]
+_qs_cols = st.columns(len(_popular))
+for i, _t in enumerate(_popular):
+    if _qs_cols[i].button(_t, key=f"qs_{_t}", use_container_width=True):
+        st.session_state["recent_tickers"] = [_t] + st.session_state.get("recent_tickers", [])[:9]
+        st.switch_page("pages/1_Stock_Analysis.py")
+
+# Recently analyzed (show if any)
+_recent = st.session_state.get("recent_tickers", [])
+if _recent:
+    st.caption(f"Recently analyzed: {', '.join(_recent[:5])}")
+    _rc_cols = st.columns(min(len(_recent), 5))
+    for i, _t in enumerate(_recent[:5]):
+        if _rc_cols[i].button(f"↩ {_t}", key=f"rc_{_t}", use_container_width=True):
+            st.switch_page("pages/1_Stock_Analysis.py")
+
+st.markdown("---")
+
 col1, col2 = st.columns(2)
 
 with col1:
