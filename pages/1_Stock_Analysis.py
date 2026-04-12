@@ -13,13 +13,80 @@ from datetime import date, timedelta
 from utils.data import get_price_history, get_price_history_dates, get_ticker_info, fetch_macro_context, SP500_TICKERS
 from utils.metrics import (
     compute_return_metrics, compute_benchmark_metrics, compute_signal,
-    monthly_returns_table, metric_card, METRIC_DESC, FUNDAMENTAL_DESC,
+    generate_prescription, monthly_returns_table, metric_card,
+    METRIC_DESC, FUNDAMENTAL_DESC,
 )
 
 st.set_page_config(page_title="Stock Analysis — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
 
+# ---------------------------------------------------------------------------
+# Investor Profile Onboarding
+# ---------------------------------------------------------------------------
+@st.dialog("Set Up Your Investor Profile", width="large")
+def _investor_profile_dialog():
+    st.markdown(
+        "StockLens tailors its recommendations to **your** investing style. "
+        "Answer three quick questions so the action engine knows how aggressive "
+        "or conservative to be."
+    )
+    st.markdown("---")
+
+    risk_col, goal_col, hor_col = st.columns(3)
+    with risk_col:
+        st.markdown("**Risk Tolerance**")
+        risk = st.radio(
+            "How much volatility can you stomach?",
+            ["Conservative", "Moderate", "Aggressive"],
+            index=1,
+            label_visibility="collapsed",
+            captions=[
+                "Preserve capital first. Smaller swings.",
+                "Balanced risk/reward. The default.",
+                "Maximize upside. Can handle big drawdowns.",
+            ],
+        )
+    with goal_col:
+        st.markdown("**Investment Goal**")
+        goal = st.radio(
+            "What are you optimizing for?",
+            ["Growth", "Income", "Balanced"],
+            index=2,
+            label_visibility="collapsed",
+            captions=[
+                "Capital appreciation. Dividends optional.",
+                "Steady cash flow from dividends.",
+                "A mix of growth and income.",
+            ],
+        )
+    with hor_col:
+        st.markdown("**Time Horizon**")
+        horizon = st.radio(
+            "How long do you plan to hold?",
+            ["Short-term", "Medium-term", "Long-term"],
+            index=1,
+            label_visibility="collapsed",
+            captions=[
+                "< 6 months. Active trading.",
+                "6 months – 3 years.",
+                "3+ years. Buy and hold.",
+            ],
+        )
+
+    st.markdown("---")
+    if st.button("Save Profile", type="primary", use_container_width=True):
+        st.session_state["investor_profile"] = {
+            "risk_tolerance": risk.lower().split("-")[0],  # "conservative", "moderate", "aggressive"
+            "goal": goal.lower(),
+            "horizon": horizon.lower().split("-")[0],  # "short", "medium", "long"
+        }
+        st.rerun()
+
+# Show onboarding if no profile exists yet
+if "investor_profile" not in st.session_state:
+    _investor_profile_dialog()
+
 st.title(":material/search: Stock Analysis")
-st.caption("Enter a ticker to get a data-driven Buy / Hold / Sell signal with full supporting analysis.")
+st.caption("Enter a ticker to get a personalized, prescriptive recommendation backed by data.")
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -64,6 +131,18 @@ with st.sidebar:
         st.session_state["shared_rf"] = rf
         st.caption("Default 5% approximates the current short-term Treasury yield.")
         roll_win = st.selectbox("Rolling vol window (days)", [21, 30, 60], index=1)
+
+    # Investor profile badge
+    _profile = st.session_state.get("investor_profile", {})
+    if _profile:
+        _rt = _profile.get("risk_tolerance", "moderate").title()
+        _g = _profile.get("goal", "balanced").title()
+        _h = _profile.get("horizon", "medium").title()
+        st.divider()
+        st.caption(f"**Your Profile:** {_rt} · {_g} · {_h}-term")
+        if st.button("Change profile", use_container_width=True):
+            del st.session_state["investor_profile"]
+            st.rerun()
 
 if not ticker:
     st.info("Enter a ticker in the sidebar.")
@@ -122,7 +201,26 @@ sig = compute_signal(info, metrics, bench_comp)
 signal_colors = {"Buy": "#2ecc71", "Hold": "#f39c12", "Sell": "#e74c3c"}
 
 st.markdown("---")
-col_sig, col_score, col_note = st.columns([1, 1, 2])
+
+# ── Generate prescription ────────────────────────────────────────────────
+_profile = st.session_state.get("investor_profile", {
+    "risk_tolerance": "moderate", "goal": "balanced", "horizon": "medium",
+})
+
+# Gather portfolio info for portfolio-aware recommendations
+_port_tickers = st.session_state.get("portfolio_tickers")
+_port_info = None
+if _port_tickers:
+    _port_info = {}
+    for _pt in _port_tickers:
+        _pi = get_ticker_info(_pt)
+        if _pi:
+            _port_info[_pt] = _pi
+
+rx = generate_prescription(sig, info, _profile, macro, _port_tickers, _port_info)
+
+# ── Display: Signal + Prescription ───────────────────────────────────────
+col_sig, col_rx = st.columns([1, 2])
 
 with col_sig:
     color = signal_colors[sig["signal"]]
@@ -133,15 +231,40 @@ with col_sig:
         f"{sig['signal'].upper()}</span></div>",
         unsafe_allow_html=True,
     )
-
-with col_score:
     st.metric("Composite Score", f"{sig['score']} / 100")
-    st.caption("Weighted blend of valuation, quality, momentum, risk, and analyst consensus.")
 
-with col_note:
-    st.markdown(sig.get("why", ""))
-    st.caption("This is a data-driven signal, not financial advice — it tells you what the numbers say, not what the market will do.")
-    # Score breakdown bar with weights
+    conf_colors = {"High": "#2ecc71", "Medium": "#f39c12", "Low": "#e74c3c"}
+    _cc = conf_colors.get(rx["confidence"], "#999")
+    st.markdown(f"**Confidence:** <span style='color:{_cc};'>{rx['confidence']}</span>", unsafe_allow_html=True)
+
+with col_rx:
+    # Action headline
+    action_color = "#2ecc71" if "Buy" in rx["action"] else "#e74c3c" if "Avoid" in rx["action"] else "#f39c12"
+    st.markdown(
+        f"### <span style='color:{action_color};'>{rx['action']}</span>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"**Position sizing:** {rx['sizing']}")
+    st.markdown(f"**Entry strategy:** {rx['entry_strategy']}")
+
+    # Reasoning
+    for r in rx["reasoning"]:
+        st.markdown(f"- {r}")
+
+    # Portfolio-aware note
+    if rx.get("portfolio_note"):
+        st.info(rx["portfolio_note"], icon=":material/account_balance_wallet:")
+
+    # Warnings
+    if rx["warnings"]:
+        with st.expander(f"⚠️ {len(rx['warnings'])} risk warning{'s' if len(rx['warnings']) > 1 else ''} to consider"):
+            for w in rx["warnings"]:
+                st.markdown(f"- {w}")
+
+    st.caption("This is a data-driven recommendation personalized to your investor profile — not financial advice.")
+
+# Dimension breakdown
+with st.expander("Signal dimension breakdown"):
     bd = sig["breakdown"]
     wt = sig.get("weights", {})
     breakdown_df = pd.DataFrame({
@@ -150,6 +273,7 @@ with col_note:
         "Weight": [f"{wt.get(d, 0)*100:.0f}%" for d in bd.keys()],
     })
     st.dataframe(breakdown_df.set_index("Dimension"), width="stretch")
+    st.markdown(sig.get("why", ""))
 
 # Analyst consensus + earnings date
 consensus_col, earnings_col = st.columns(2)
