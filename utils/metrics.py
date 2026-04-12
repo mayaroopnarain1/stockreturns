@@ -601,3 +601,270 @@ def metric_card(container, label: str, value: str, key: str, descs: dict | None 
     desc = descs.get(key, "")
     if desc:
         container.caption(desc)
+
+
+# ---------------------------------------------------------------------------
+# Prescriptive Action Engine
+# ---------------------------------------------------------------------------
+
+# Sector → friendly group name (for portfolio concentration checks)
+SECTOR_GROUPS: dict[str, str] = {
+    "Technology": "Tech", "Financial Services": "Financials",
+    "Healthcare": "Healthcare", "Industrials": "Industrials",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Energy": "Energy", "Utilities": "Utilities",
+    "Communication Services": "Communication",
+    "Real Estate": "Real Estate", "Basic Materials": "Materials",
+}
+
+
+def generate_prescription(
+    signal_result: dict,
+    info: dict,
+    profile: dict,
+    macro: dict | None = None,
+    portfolio_holdings: list[str] | None = None,
+    portfolio_info: dict[str, dict] | None = None,
+) -> dict:
+    """
+    Generate a prescriptive action recommendation based on the composite
+    signal, the investor's profile, macro context, and current portfolio.
+
+    Parameters
+    ----------
+    signal_result : dict from compute_signal()
+    info : dict from yfinance ticker.info
+    profile : {"risk_tolerance": str, "goal": str, "horizon": str}
+        risk_tolerance: "conservative", "moderate", "aggressive"
+        goal: "growth", "income", "balanced"
+        horizon: "short", "medium", "long"
+    macro : dict from fetch_macro_context() or None
+    portfolio_holdings : list of ticker symbols the user currently holds
+    portfolio_info : dict mapping ticker → yfinance info dict (for sector checks)
+
+    Returns
+    -------
+    dict with keys:
+        action: str — the headline recommendation
+        sizing: str — position sizing guidance
+        entry_strategy: str — how to enter
+        reasoning: list[str] — bullet-point rationale
+        warnings: list[str] — risk factors to watch
+        confidence: str — "High", "Medium", "Low"
+        portfolio_note: str or None — portfolio-aware insight
+    """
+    score = signal_result["score"]
+    sig = signal_result["signal"]
+    breakdown = signal_result["breakdown"]
+    reasons = signal_result["reasons"]
+
+    rt = profile.get("risk_tolerance", "moderate")
+    goal = profile.get("goal", "balanced")
+    hor = profile.get("horizon", "medium")
+
+    ticker = info.get("symbol", info.get("shortName", "this stock"))
+    sector = info.get("sector", "Unknown")
+
+    # ── Profile-adjusted thresholds ──────────────────────────────────────
+    # Conservative investors need a higher score to get a "Buy" action
+    buy_threshold = {"conservative": 68, "moderate": 62, "aggressive": 55}[rt]
+    strong_buy_threshold = {"conservative": 78, "moderate": 72, "aggressive": 65}[rt]
+    avoid_threshold = {"conservative": 50, "moderate": 40, "aggressive": 32}[rt]
+
+    # ── Determine action ─────────────────────────────────────────────────
+    action = ""
+    sizing = ""
+    entry_strategy = ""
+    reasoning_points = []
+    warnings = []
+
+    # Volatility & drawdown info for entry strategy
+    max_dd = abs(signal_result["breakdown"].get("Risk", 50))
+    vix = macro.get("vix") if macro else None
+    tnx = macro.get("tnx") if macro else None
+    beta_val = info.get("beta", 1.0)
+    dividend_yield = info.get("dividendYield")
+    n_analysts = info.get("numberOfAnalystOpinions", 0) or 0
+
+    if score >= strong_buy_threshold:
+        action = "Buy — strong conviction"
+        if rt == "aggressive":
+            sizing = "Consider a 5–8% position"
+        elif rt == "moderate":
+            sizing = "Consider a 3–5% position"
+        else:
+            sizing = "Consider a 2–4% position"
+        reasoning_points.append(
+            f"Composite score of {score:.0f}/100 clears your {rt} Buy threshold ({buy_threshold}) with room to spare"
+        )
+    elif score >= buy_threshold:
+        action = "Buy — start a position"
+        if rt == "aggressive":
+            sizing = "Consider a 3–5% position"
+        elif rt == "moderate":
+            sizing = "Consider a 2–4% position"
+        else:
+            sizing = "Consider a 1–3% position"
+        reasoning_points.append(
+            f"Score of {score:.0f}/100 crosses your {rt} Buy threshold ({buy_threshold})"
+        )
+    elif score >= avoid_threshold:
+        action = "Hold — not compelling enough to add"
+        sizing = "No new capital recommended"
+        reasoning_points.append(
+            f"Score of {score:.0f}/100 is in the Hold zone for a {rt} investor"
+        )
+    else:
+        action = "Avoid — or trim if you own it"
+        sizing = "Reduce exposure or stay out"
+        reasoning_points.append(
+            f"Score of {score:.0f}/100 falls below your {rt} Avoid threshold ({avoid_threshold})"
+        )
+
+    # ── Entry strategy (based on volatility + macro) ─────────────────────
+    high_vol = (vix and vix > 20) or (beta_val and beta_val > 1.3)
+
+    if "Buy" in action:
+        if high_vol:
+            entry_strategy = "Dollar-cost average in over 4–6 weeks — volatility is elevated"
+            warnings.append("VIX or beta suggests above-average swings; avoid going all-in at once")
+        elif hor == "short":
+            entry_strategy = "Enter near current levels with a tight stop-loss (5–8% below entry)"
+        elif hor == "long":
+            entry_strategy = "Lump sum is fine for long-term holds; or split into 2 tranches a month apart"
+        else:
+            entry_strategy = "Enter in 2 tranches over 2–4 weeks to smooth timing risk"
+    elif action.startswith("Hold"):
+        entry_strategy = "Set an alert — revisit if the score moves above " + str(buy_threshold)
+    else:
+        entry_strategy = "No entry — wait for a fundamental improvement or a meaningful price reset"
+
+    # ── Dimension-specific reasoning ─────────────────────────────────────
+    dims_sorted = sorted(breakdown.items(), key=lambda x: x[1], reverse=True)
+    best_dim, best_score = dims_sorted[0]
+    worst_dim, worst_score = dims_sorted[-1]
+
+    reasoning_points.append(
+        f"Strongest: {best_dim} ({best_score:.0f}/100) — {reasons.get(best_dim, '')}"
+    )
+    reasoning_points.append(
+        f"Weakest: {worst_dim} ({worst_score:.0f}/100) — {reasons.get(worst_dim, '')}"
+    )
+
+    # Goal-specific commentary
+    if goal == "income":
+        if dividend_yield and dividend_yield > 0.02:
+            reasoning_points.append(
+                f"Dividend yield of {dividend_yield*100:.1f}% aligns with your income goal"
+            )
+        elif dividend_yield and dividend_yield > 0:
+            warnings.append(
+                f"Dividend yield is only {dividend_yield*100:.2f}% — may not meet income needs"
+            )
+        else:
+            warnings.append("No dividend — doesn't fit an income-focused strategy")
+    elif goal == "growth":
+        eg = info.get("earningsGrowth")
+        rg = info.get("revenueGrowth")
+        if eg and eg > 0.10:
+            reasoning_points.append(f"Earnings growth of {eg*100:.0f}% supports your growth goal")
+        elif rg and rg > 0.10:
+            reasoning_points.append(f"Revenue growth of {rg*100:.0f}% supports your growth goal")
+        else:
+            warnings.append("Growth metrics are modest — may not deliver the upside a growth investor wants")
+
+    # Macro warnings
+    if tnx and tnx > 4.5 and sector == "Technology":
+        warnings.append(f"Treasury yields at {tnx:.1f}% pressure tech valuations — be prepared for multiple compression")
+    if vix and vix > 25:
+        warnings.append(f"VIX at {vix:.0f} signals elevated fear — expect wider price swings")
+
+    # Earnings proximity warning
+    from datetime import datetime
+    raw_earnings = info.get("earningsTimestamp") or info.get("earningsDate")
+    earnings_dt = None
+    if isinstance(raw_earnings, (int, float)) and raw_earnings > 0:
+        try:
+            earnings_dt = datetime.fromtimestamp(raw_earnings)
+        except Exception:
+            pass
+    elif isinstance(raw_earnings, list) and raw_earnings:
+        try:
+            earnings_dt = datetime.fromtimestamp(raw_earnings[0])
+        except Exception:
+            pass
+    if earnings_dt:
+        days_until = (earnings_dt - datetime.now()).days
+        if 0 <= days_until <= 14:
+            warnings.append(
+                f"Earnings in {days_until} days — the signal could shift significantly. "
+                f"Consider waiting until after the report if you're a {rt} investor"
+            )
+
+    # ── Confidence level ─────────────────────────────────────────────────
+    confidence_score = 0
+    if n_analysts >= 15:
+        confidence_score += 2
+    elif n_analysts >= 5:
+        confidence_score += 1
+    # How many signal dimensions have data?
+    dims_with_data = sum(1 for v in breakdown.values() if v != 50.0)
+    if dims_with_data >= 5:
+        confidence_score += 2
+    elif dims_with_data >= 3:
+        confidence_score += 1
+    # Clear signal (not borderline)
+    if abs(score - buy_threshold) > 10:
+        confidence_score += 1
+
+    if confidence_score >= 4:
+        confidence = "High"
+    elif confidence_score >= 2:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+        warnings.append("Limited data coverage — treat this recommendation with extra caution")
+
+    # ── Portfolio-aware check ────────────────────────────────────────────
+    portfolio_note = None
+    if portfolio_holdings and portfolio_info and "Buy" in action:
+        # Check sector concentration
+        sector_counts: dict[str, int] = {}
+        for t in portfolio_holdings:
+            t_info = portfolio_info.get(t, {})
+            t_sector = t_info.get("sector", "Unknown")
+            sector_counts[t_sector] = sector_counts.get(t_sector, 0) + 1
+        total = len(portfolio_holdings)
+        same_sector_count = sector_counts.get(sector, 0)
+        same_sector_pct = same_sector_count / total * 100 if total > 0 else 0
+
+        ticker_sym = info.get("symbol", "")
+        if ticker_sym.upper() in [t.upper() for t in portfolio_holdings]:
+            portfolio_note = (
+                f"You already hold {ticker_sym}. Consider whether adding more "
+                f"increases concentration risk before sizing up."
+            )
+        elif same_sector_pct >= 30:
+            friendly = SECTOR_GROUPS.get(sector, sector)
+            portfolio_note = (
+                f"You already have {same_sector_count} of {total} holdings in {friendly} "
+                f"({same_sector_pct:.0f}%). Adding another {friendly} stock increases sector "
+                f"concentration — consider diversifying into a different sector."
+            )
+        elif same_sector_pct >= 20:
+            friendly = SECTOR_GROUPS.get(sector, sector)
+            portfolio_note = (
+                f"{friendly} already makes up {same_sector_pct:.0f}% of your holdings. "
+                f"This is manageable, but keep an eye on sector concentration."
+            )
+
+    return {
+        "action": action,
+        "sizing": sizing,
+        "entry_strategy": entry_strategy,
+        "reasoning": reasoning_points,
+        "warnings": warnings,
+        "confidence": confidence,
+        "portfolio_note": portfolio_note,
+    }
