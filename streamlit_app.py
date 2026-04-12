@@ -38,11 +38,11 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader(":material/search: Stock Analysis")
     st.write(
-        "Enter any ticker and get a **Buy / Hold / Sell** signal backed by a "
-        "5-dimension composite score: valuation (sector-relative P/E, FCF yield), "
-        "quality (margins, ROE), momentum, risk, and **Wall Street consensus**. "
-        "Includes macro context (Treasury yields, VIX), full fundamentals, "
-        "benchmark comparison, rolling volatility, and monthly heatmap."
+        "Enter any ticker and get a **prescriptive recommendation** — not just "
+        "Buy/Hold/Sell, but specific position sizing, entry strategy, and risk "
+        "warnings tailored to **your investor profile** (risk tolerance, goal, "
+        "time horizon). Backed by a 5-dimension composite score with macro context, "
+        "full fundamentals, benchmark comparison, and portfolio-aware insights."
     )
 
     st.subheader(":material/filter_list: Stock Screener")
