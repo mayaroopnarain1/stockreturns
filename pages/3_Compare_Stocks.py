@@ -10,29 +10,47 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
-from utils.data import get_price_history_batch, get_price_history, get_ticker_info, SECTOR_ETFS
+from utils.data import get_price_history_batch, get_price_history, get_ticker_info, SECTOR_ETFS, SP500_TICKERS
 from utils.metrics import compute_return_metrics, METRIC_DESC, FUNDAMENTAL_DESC
 
 st.set_page_config(page_title="Compare Stocks — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
 st.title(":material/compare_arrows: Compare Stocks")
-st.caption("Pick 2–5 tickers and compare returns, risk, fundamentals, and relative performance.")
+st.caption("Pick 2–10 tickers and compare returns, risk, fundamentals, and relative performance.")
+
+# Default tickers: prefer portfolio holdings, then recently analyzed, then sensible default
+_default_tickers = st.session_state.get(
+    "portfolio_tickers",
+    st.session_state.get("recent_tickers", ["AAPL", "MSFT", "GOOGL"])
+)
+if len(_default_tickers) < 2:
+    _default_tickers = ["AAPL", "MSFT", "GOOGL"]
 
 with st.sidebar:
-    raw = st.text_input("Tickers (comma-separated)", "AAPL, MSFT, GOOGL")
-    tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+    tickers = st.multiselect(
+        "Stock tickers",
+        options=sorted(set(SP500_TICKERS) | set(_default_tickers)),
+        default=_default_tickers,
+        max_selections=10,
+        accept_new_options=True,
+        placeholder="Search or type tickers to compare",
+    )
+    tickers = [t.upper() for t in tickers]
     if len(tickers) < 2:
-        st.warning("Enter at least 2 tickers.")
+        st.warning("Pick at least 2 tickers.")
         st.stop()
-    if len(tickers) > 5:
-        tickers = tickers[:5]
-        st.info("Using first 5 tickers.")
     horizon_map = {
         "3M": "3mo", "6M": "6mo", "1Y": "1y", "2Y": "2y", "5Y": "5y",
     }
-    horizon = st.pills("Time horizon", list(horizon_map.keys()), default="1Y")
+    _saved_horizon = st.session_state.get("shared_horizon", "1Y")
+    # Only use saved horizon if it's valid for this page (no Custom here)
+    _h_default = _saved_horizon if _saved_horizon in horizon_map else "1Y"
+    horizon = st.pills("Time horizon", list(horizon_map.keys()), default=_h_default)
     if not horizon:
         horizon = "1Y"
-    rf = st.number_input("Risk-free rate", 0.0, 0.20, 0.05, 0.01, format="%.2f")
+    st.session_state["shared_horizon"] = horizon
+    _saved_rf = st.session_state.get("shared_rf", 0.05)
+    rf = st.number_input("Risk-free rate", 0.0, 0.20, _saved_rf, 0.01, format="%.2f")
+    st.session_state["shared_rf"] = rf
 
 # ---------------------------------------------------------------------------
 # Batch fetch all prices at once (single API call)

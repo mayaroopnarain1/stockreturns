@@ -10,7 +10,7 @@ import pandas as pd
 import altair as alt
 import numpy as np
 from datetime import date, timedelta
-from utils.data import get_price_history, get_price_history_dates, get_ticker_info, fetch_macro_context
+from utils.data import get_price_history, get_price_history_dates, get_ticker_info, fetch_macro_context, SP500_TICKERS
 from utils.metrics import (
     compute_return_metrics, compute_benchmark_metrics, compute_signal,
     monthly_returns_table, metric_card, METRIC_DESC, FUNDAMENTAL_DESC,
@@ -25,16 +25,30 @@ st.caption("Enter a ticker to get a data-driven Buy / Hold / Sell signal with fu
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    ticker = st.text_input("Stock ticker", value="AAPL").upper()
-    benchmark = st.selectbox("Benchmark", ["SPY", "QQQ"], index=0)
+    _recent = st.session_state.get("recent_tickers", [])
+    _analysis_default = [_recent[0]] if _recent else ["AAPL"]
+    ticker_sel = st.multiselect(
+        "Stock ticker",
+        options=sorted(SP500_TICKERS),
+        default=_analysis_default,
+        max_selections=1,
+        accept_new_options=True,
+        placeholder="Search or type a ticker",
+    )
+    ticker = ticker_sel[0].upper() if ticker_sel else ""
+    _saved_bench = st.session_state.get("shared_benchmark", "SPY")
+    benchmark = st.selectbox("Benchmark", ["SPY", "QQQ"], index=["SPY", "QQQ"].index(_saved_bench) if _saved_bench in ["SPY", "QQQ"] else 0)
+    st.session_state["shared_benchmark"] = benchmark
 
     horizon_map = {
         "3M": "3mo", "6M": "6mo", "1Y": "1y",
         "2Y": "2y", "5Y": "5y", "Custom": "custom",
     }
-    horizon = st.pills("Time horizon", list(horizon_map.keys()), default="1Y")
+    _saved_horizon = st.session_state.get("shared_horizon", "1Y")
+    horizon = st.pills("Time horizon", list(horizon_map.keys()), default=_saved_horizon)
     if not horizon:
         horizon = "1Y"
+    st.session_state["shared_horizon"] = horizon
     use_custom = horizon_map[horizon] == "custom"
     custom_start = custom_end = None
     if use_custom:
@@ -45,13 +59,21 @@ with st.sidebar:
             st.stop()
 
     with st.expander("Settings"):
-        rf = st.number_input("Risk-free rate", 0.0, 0.20, 0.05, 0.01, format="%.2f")
+        _saved_rf = st.session_state.get("shared_rf", 0.05)
+        rf = st.number_input("Risk-free rate", 0.0, 0.20, _saved_rf, 0.01, format="%.2f")
+        st.session_state["shared_rf"] = rf
         st.caption("Default 5% approximates the current short-term Treasury yield.")
         roll_win = st.selectbox("Rolling vol window (days)", [21, 30, 60], index=1)
 
 if not ticker:
     st.info("Enter a ticker in the sidebar.")
     st.stop()
+
+# Track recently analyzed tickers for cross-page convenience
+_recent = st.session_state.get("recent_tickers", [])
+if ticker not in _recent:
+    _recent = [ticker] + _recent[:9]  # Keep last 10
+    st.session_state["recent_tickers"] = _recent
 
 # ---------------------------------------------------------------------------
 # Load data

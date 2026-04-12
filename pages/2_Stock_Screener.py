@@ -174,6 +174,17 @@ if filtered.empty:
     st.warning("No stocks match. Try loosening the filters or choosing a different preset.")
     st.stop()
 
+# Quick actions — send top results to other pages
+_top_tickers = list(filtered.index[:10])
+act_cols = st.columns([2, 2, 2, 4])
+if act_cols[0].button("Compare top results", icon=":material/compare_arrows:", use_container_width=True):
+    st.session_state["portfolio_tickers"] = _top_tickers[:10]
+    st.switch_page("pages/3_Compare_Stocks.py")
+if act_cols[1].button("Build portfolio", icon=":material/account_balance_wallet:", use_container_width=True):
+    st.session_state["portfolio_tickers"] = _top_tickers[:10]
+    st.switch_page("pages/4_Portfolio_Risk.py")
+act_cols[2].caption(f"Sends top {min(len(_top_tickers), 10)} results")
+
 display_cols = {
     "shortName": "Company", "sector": "Sector", "marketCapB": "Mkt Cap ($B)",
     "currentPrice": "Price", "trailingPE": "P/E", "forwardPE": "Fwd P/E",
