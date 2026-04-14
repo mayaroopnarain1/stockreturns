@@ -10,14 +10,32 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
 from utils.data import get_price_history_batch, SP500_TICKERS
 from utils.metrics import compute_return_metrics, metric_card
 
-# Custom correlation colormap: Green (-1) → Amber (0) → Red (1)
-_CORR_CMAP = LinearSegmentedColormap.from_list(
-    "corr_gar", [(0.0, "#27ae60"), (0.5, "#f39c12"), (1.0, "#e74c3c")]
-)
+
+def _corr_cell_style(val) -> str:
+    """CSS for a correlation cell. Nonlinear sign-preserving gradient so the
+    sign of the value is always visually obvious:
+      −1 → green, 0 → amber, +1 → red.
+    Small magnitudes are amplified so e.g. −0.008 reads as green, not amber."""
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(v):
+        return ""
+    v = max(-1.0, min(1.0, v))
+    mag = abs(v) ** 0.3
+    if v >= 0:
+        r = int(0xF3 + (0xE7 - 0xF3) * mag)
+        g = int(0x9C + (0x4C - 0x9C) * mag)
+        b = int(0x12 + (0x3C - 0x12) * mag)
+    else:
+        r = int(0xF3 + (0x27 - 0xF3) * mag)
+        g = int(0x9C + (0xAE - 0x9C) * mag)
+        b = int(0x12 + (0x60 - 0x12) * mag)
+    return f"background-color: rgb({r},{g},{b}); color: white"
 
 st.set_page_config(page_title="Portfolio Risk — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
 st.title(":material/account_balance_wallet: Portfolio Risk")
@@ -198,7 +216,7 @@ with tab_cont:
     st.divider()
     st.subheader("Correlation Matrix")
     corr = ret_df.corr().round(3)
-    st.dataframe(corr.style.background_gradient(cmap=_CORR_CMAP, vmin=-1, vmax=1), width="stretch")
+    st.dataframe(corr.style.map(_corr_cell_style).format("{:.3f}"), width="stretch")
 
 with tab_hold:
     st.subheader("Individual Metrics")
