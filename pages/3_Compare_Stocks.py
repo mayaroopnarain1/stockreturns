@@ -10,8 +10,14 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 from utils.data import get_price_history_batch, get_price_history, get_ticker_info, SECTOR_ETFS, SP500_TICKERS
 from utils.metrics import compute_return_metrics, METRIC_DESC, FUNDAMENTAL_DESC
+
+# Custom correlation colormap: Green (-1) → Amber (0) → Red (1)
+_CORR_CMAP = LinearSegmentedColormap.from_list(
+    "corr_gar", [(0.0, "#27ae60"), (0.5, "#f39c12"), (1.0, "#e74c3c")]
+)
 
 st.set_page_config(page_title="Compare Stocks — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
 st.title(":material/compare_arrows: Compare Stocks")
@@ -279,4 +285,4 @@ with tab_corr:
     st.caption("Near 1 = move together; near 0 = independent; negative = move opposite. Lower = better diversification.")
     rdf = pd.DataFrame({t: mets[t]["daily_ret_pct"] for t in valid})
     corr = rdf.corr().round(3)
-    st.dataframe(corr.style.background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1), width="stretch")
+    st.dataframe(corr.style.background_gradient(cmap=_CORR_CMAP, vmin=-1, vmax=1), width="stretch")

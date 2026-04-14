@@ -10,8 +10,14 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 from utils.data import get_price_history_batch, SP500_TICKERS
 from utils.metrics import compute_return_metrics, metric_card
+
+# Custom correlation colormap: Green (-1) → Amber (0) → Red (1)
+_CORR_CMAP = LinearSegmentedColormap.from_list(
+    "corr_gar", [(0.0, "#27ae60"), (0.5, "#f39c12"), (1.0, "#e74c3c")]
+)
 
 st.set_page_config(page_title="Portfolio Risk — StockLens", page_icon=":chart_with_upwards_trend:", layout="wide")
 st.title(":material/account_balance_wallet: Portfolio Risk")
@@ -192,7 +198,7 @@ with tab_cont:
     st.divider()
     st.subheader("Correlation Matrix")
     corr = ret_df.corr().round(3)
-    st.dataframe(corr.style.background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1), width="stretch")
+    st.dataframe(corr.style.background_gradient(cmap=_CORR_CMAP, vmin=-1, vmax=1), width="stretch")
 
 with tab_hold:
     st.subheader("Individual Metrics")
