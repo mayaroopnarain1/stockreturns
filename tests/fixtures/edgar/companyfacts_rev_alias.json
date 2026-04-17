@@ -1,0 +1,23 @@
+{
+  "cik": 111111,
+  "entityName": "Alias-only Corp",
+  "facts": {
+    "us-gaap": {
+      "RevenueFromContractWithCustomerExcludingAssessedTax": {
+        "label": "Revenue (ASC 606)",
+        "units": {
+          "USD": [
+            {"end": "2024-12-31", "val": 80000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      },
+      "Assets": {
+        "units": {
+          "USD": [
+            {"end": "2024-12-31", "val": 200000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      }
+    }
+  }
+}

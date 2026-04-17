@@ -1,5 +1,8 @@
 .streamlit/secrets.toml
 
+# EDGAR raw-JSON disk cache
+.edgar_cache/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
