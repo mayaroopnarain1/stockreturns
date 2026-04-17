@@ -32,7 +32,19 @@ from utils.data import (
     get_sector_etf,
     get_sector_peers,
     fetch_fundamentals_bulk,
+    get_financials,
     SP500_TICKERS,
+)
+from utils.financials import (
+    dupont_roe,
+    margin_decomposition,
+    roic_analysis,
+    revenue_quality,
+    earnings_quality,
+    accruals_analysis,
+    fcf_conversion,
+    leverage_liquidity,
+    quality_scorecard,
 )
 from utils.metrics import (
     compute_return_metrics,
@@ -303,8 +315,8 @@ st.divider()
 # ===========================================================================
 # Tabs
 # ===========================================================================
-tab_overview, tab_fund, tab_tech, tab_risk, tab_events = st.tabs(
-    ["Overview", "Fundamentals", "Technicals", "Risk", "Price & Events"]
+tab_overview, tab_fund, tab_financials, tab_tech, tab_risk, tab_events = st.tabs(
+    ["Overview", "Fundamentals", "Financial Analytics", "Technicals", "Risk", "Price & Events"]
 )
 
 
@@ -568,6 +580,350 @@ with tab_fund:
             "Enable **sector & universe percentile context** above to see how this stock ranks against its sector. "
             "(First load is slow; results cache for 12 hours.)",
             icon=":material/insights:",
+        )
+
+
+# ========================== FINANCIAL ANALYTICS =============================
+with tab_financials:
+    st.subheader("Financial Analytics")
+    st.caption(
+        "Analyses derived from the income statement, balance sheet, and cash flow "
+        "statement. Each returns a trend across periods plus a one-line interpretation."
+    )
+
+    fin_freq_label = st.radio(
+        "Period",
+        ["Annual (4y)", "Quarterly (8q)"],
+        horizontal=True,
+        key="fin_freq",
+    )
+    fin_freq = "annual" if fin_freq_label.startswith("Annual") else "quarterly"
+
+    with st.spinner("Loading financial statements…"):
+        stmts = get_financials(ticker, freq=fin_freq)
+
+    if all(stmts[k].empty for k in ("income", "balance", "cashflow")):
+        st.warning(
+            "No financial statements available for this ticker. "
+            "Coverage is spotty for non-US stocks and some small caps."
+        )
+    else:
+        # Compute analyses once — they share inputs.
+        an_dupont   = dupont_roe(stmts)
+        an_margins  = margin_decomposition(stmts)
+        an_roic     = roic_analysis(stmts)
+        an_revq     = revenue_quality(stmts)
+        an_eq       = earnings_quality(stmts)
+        an_accruals = accruals_analysis(stmts)
+        an_fcf      = fcf_conversion(stmts)
+        an_lev      = leverage_liquidity(stmts)
+        scorecard   = quality_scorecard(
+            an_dupont, an_margins, an_roic, an_eq, an_accruals, an_fcf, an_lev,
+        )
+
+        # ---------------- Quality Scorecard banner ----------------
+        pillar_colors = {"Strong": "#1e8449", "Solid": "#2e86c1",
+                         "Fair": "#b9770e", "Weak": "#a93226", "—": "#7f8c8d"}
+        pillars = [
+            ("Profitability",    scorecard["profitability"]),
+            ("Earnings Quality", scorecard["earnings_quality"]),
+            ("Balance Sheet",    scorecard["balance_sheet"]),
+        ]
+        sc_cols = st.columns(3)
+        for col, (name, data) in zip(sc_cols, pillars):
+            score = data["score"]
+            label = data["label"]
+            color = pillar_colors[label]
+            score_txt = f"{score:.0f}/100" if pd.notna(score) else "—"
+            col.markdown(
+                f"""
+                <div style="
+                    border: 2px solid {color};
+                    border-radius: 10px;
+                    padding: 12px 16px;
+                    background: {color}15;
+                ">
+                    <div style="font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.06em;">
+                        {name}
+                    </div>
+                    <div style="font-size: 26px; font-weight: 700; color: {color}; line-height: 1.1;">
+                        {label}
+                    </div>
+                    <div style="font-size: 13px; color: #555; margin-top: 2px;">
+                        Score: <b>{score_txt}</b>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+
+        # ---------------- Helpers for rendering ----------------
+        def _fmt_pct(v, digits=1):
+            return f"{v*100:.{digits}f}%" if pd.notna(v) else "—"
+
+        def _fmt_num(v, digits=2):
+            return f"{v:.{digits}f}" if pd.notna(v) else "—"
+
+        def _fmt_money(v):
+            if pd.isna(v):
+                return "—"
+            a = abs(v)
+            if a >= 1e9:
+                return f"${v/1e9:,.2f}B"
+            if a >= 1e6:
+                return f"${v/1e6:,.1f}M"
+            return f"${v:,.0f}"
+
+        def _render_df(df: pd.DataFrame, formatters: dict[str, callable]):
+            if df.empty:
+                st.caption("—")
+                return
+            disp = df.copy()
+            for row, fn in formatters.items():
+                if row in disp.index:
+                    disp.loc[row] = disp.loc[row].apply(fn)
+            # Any rows without a formatter fall back to number formatting
+            for row in disp.index:
+                if row not in formatters:
+                    disp.loc[row] = disp.loc[row].apply(lambda v: _fmt_num(v))
+            st.dataframe(disp, width="stretch")
+
+        # =============== Section A — Profitability Architecture ===============
+        st.markdown("### Profitability Architecture")
+
+        # ---- 1. DuPont ROE ----
+        st.markdown("#### 1. DuPont ROE decomposition")
+        st.caption(
+            "ROE = Net Margin × Asset Turnover × Equity Multiplier. "
+            "Shows whether returns come from pricing power, efficient asset use, or leverage."
+        )
+        _render_df(an_dupont["df"], {
+            "Net Margin":        _fmt_pct,
+            "Asset Turnover":    lambda v: _fmt_num(v, 2),
+            "Equity Multiplier": lambda v: _fmt_num(v, 2),
+            "ROE":               _fmt_pct,
+        })
+        latest_roe = an_dupont["latest_roe"]
+        if pd.notna(latest_roe):
+            st.caption(
+                f"Latest ROE **{_fmt_pct(latest_roe)}** — primary driver: **{an_dupont['driver']}**."
+            )
+
+        # ---- 2. Margin decomposition ----
+        st.markdown("#### 2. Margin decomposition")
+        st.caption("Where profit leaks as revenue moves from top-line to bottom-line.")
+        _render_df(an_margins["df"], {
+            "Gross margin":     _fmt_pct,
+            "Operating margin": _fmt_pct,
+            "Pretax margin":    _fmt_pct,
+            "Net margin":       _fmt_pct,
+        })
+
+        margins_df = an_margins["df"]
+        if not margins_df.empty:
+            mlong = margins_df.T.reset_index().melt(
+                id_vars="index", var_name="Stage", value_name="Margin"
+            ).rename(columns={"index": "Period"}).dropna()
+            stage_order = ["Gross margin", "Operating margin", "Pretax margin", "Net margin"]
+            margin_chart = (
+                alt.Chart(mlong).mark_line(point=True)
+                .encode(
+                    x=alt.X("Period:N", title=None),
+                    y=alt.Y("Margin:Q", axis=alt.Axis(format="%")),
+                    color=alt.Color("Stage:N", sort=stage_order),
+                    tooltip=["Period:N", "Stage:N", alt.Tooltip("Margin:Q", format=".2%")],
+                ).properties(height=260)
+            )
+            st.altair_chart(margin_chart, width="stretch")
+        if an_margins["biggest_leak"] != "—":
+            st.caption(f"Biggest margin drop in latest period: **{an_margins['biggest_leak']}**.")
+
+        # ---- 3. ROIC ----
+        st.markdown("#### 3. ROIC (indirect NOPAT)")
+        st.caption(
+            "NOPAT = (NI + Tax + Interest − NonOpIncome) × (1 − tax rate). "
+            "ROIC = NOPAT / avg (Debt + Equity − Cash)."
+        )
+        _render_df(an_roic["df"], {
+            "NOPAT":              _fmt_money,
+            "Invested Capital":   _fmt_money,
+            "Effective tax rate": _fmt_pct,
+            "ROIC":               _fmt_pct,
+        })
+        if pd.notna(an_roic["latest_roic"]):
+            verdict = "**creates value**" if an_roic["creates_value"] else "**destroys value**"
+            st.caption(
+                f"Latest ROIC **{_fmt_pct(an_roic['latest_roic'])}** vs "
+                f"WACC proxy {_fmt_pct(an_roic['wacc_proxy'], 0)} — {verdict}."
+            )
+
+        st.divider()
+
+        # =============== Section B — Earnings Quality ===============
+        st.markdown("### Earnings Quality")
+
+        # ---- 4. Revenue quality ----
+        st.markdown("#### 4. Revenue quality")
+        st.caption(
+            "Growth pace and whether rising revenue is collected as cash "
+            "(AR growing faster than revenue = receivables building up)."
+        )
+        _render_df(an_revq["df"], {
+            "Revenue":      _fmt_money,
+            "Revenue YoY":  _fmt_pct,
+            "AR / Revenue": _fmt_pct,
+            "AR YoY":       _fmt_pct,
+        })
+        rq_bits = []
+        if pd.notna(an_revq["cagr_3y"]):
+            rq_bits.append(f"3y revenue CAGR: **{_fmt_pct(an_revq['cagr_3y'])}**")
+        if pd.notna(an_revq["latest_yoy"]):
+            rq_bits.append(f"latest YoY: **{_fmt_pct(an_revq['latest_yoy'])}**")
+        if an_revq["ar_outpacing_revenue"]:
+            rq_bits.append(":red[⚠ AR is growing >10pp faster than revenue — watch collections]")
+        if rq_bits:
+            st.caption(" · ".join(rq_bits))
+
+        # ---- 5. Earnings quality (NI vs OCF) ----
+        st.markdown("#### 5. Earnings quality — NI vs OCF divergence")
+        st.caption(
+            "Cash flow should track reported earnings. Persistent gaps suggest aggressive "
+            "accrual accounting or working-capital drag."
+        )
+        eq_df = an_eq["df"]
+        _render_df(eq_df, {
+            "Net Income":          _fmt_money,
+            "Operating Cash Flow": _fmt_money,
+            "(OCF − NI) / |NI|":   _fmt_pct,
+            "Effective tax rate":  _fmt_pct,
+        })
+
+        if not eq_df.empty and {"Net Income", "Operating Cash Flow"}.issubset(eq_df.index):
+            ni_ocf = eq_df.loc[["Net Income", "Operating Cash Flow"]].T.reset_index()
+            ni_ocf.columns = ["Period", "Net Income", "Operating Cash Flow"]
+            ni_ocf_long = ni_ocf.melt(id_vars="Period", var_name="Series", value_name="Value").dropna()
+            ni_ocf_chart = (
+                alt.Chart(ni_ocf_long).mark_line(point=True)
+                .encode(
+                    x=alt.X("Period:N", title=None),
+                    y=alt.Y("Value:Q", title="$"),
+                    color=alt.Color("Series:N", scale=alt.Scale(
+                        domain=["Net Income", "Operating Cash Flow"],
+                        range=["#e67e22", "#2980b9"],
+                    )),
+                    tooltip=["Period:N", "Series:N", alt.Tooltip("Value:Q", format="$,.0f")],
+                ).properties(height=260)
+            )
+            st.altair_chart(ni_ocf_chart, width="stretch")
+
+        eq_bits = []
+        if pd.notna(an_eq["latest_gap"]):
+            eq_bits.append(f"Latest OCF−NI gap: **{_fmt_pct(an_eq['latest_gap'])}**")
+        if an_eq["tax_unstable"]:
+            eq_bits.append(f":orange[Effective tax rate volatile (σ={_fmt_pct(an_eq['tax_std'])})]")
+        if eq_bits:
+            st.caption(" · ".join(eq_bits))
+
+        # ---- 6. Accruals ----
+        st.markdown("#### 6. Accruals (Sloan ratio)")
+        st.caption(
+            "(NI − OCF) / avg Assets. Lower is better — high accruals historically "
+            "predict weaker future returns (Sloan 1996)."
+        )
+        _render_df(an_accruals["df"], {"Sloan accrual ratio": _fmt_pct})
+        if pd.notna(an_accruals["latest"]):
+            band_color = {"Clean": "#1e8449", "Watch": "#b9770e", "Red flag": "#a93226"}.get(
+                an_accruals["band"], "#7f8c8d"
+            )
+            st.markdown(
+                f"Latest: **{_fmt_pct(an_accruals['latest'])}** · "
+                f"<span style='color:{band_color};font-weight:600'>{an_accruals['band']}</span> "
+                "(&lt; 5% clean · 5–10% watch · &gt; 10% red flag)",
+                unsafe_allow_html=True,
+            )
+
+        # ---- 7. FCF conversion ----
+        st.markdown("#### 7. FCF conversion")
+        st.caption(
+            "Free Cash Flow / Net Income. >100% means every dollar of earnings "
+            "becomes a dollar of cash (and more); <70% sustained is a concern."
+        )
+        _render_df(an_fcf["df"], {
+            "Net Income": _fmt_money,
+            "FCF":        _fmt_money,
+            "FCF / NI":   _fmt_pct,
+        })
+        fcf_df = an_fcf["df"]
+        if not fcf_df.empty and "FCF / NI" in fcf_df.index:
+            conv = fcf_df.loc["FCF / NI"].reset_index()
+            conv.columns = ["Period", "FCF / NI"]
+            conv = conv.dropna()
+            if not conv.empty:
+                conv_chart = (
+                    alt.Chart(conv).mark_bar()
+                    .encode(
+                        x=alt.X("Period:N", title=None),
+                        y=alt.Y("FCF / NI:Q", axis=alt.Axis(format="%")),
+                        color=alt.condition(
+                            alt.datum["FCF / NI"] >= 0.7,
+                            alt.value("#27ae60"), alt.value("#e67e22"),
+                        ),
+                        tooltip=["Period:N", alt.Tooltip("FCF / NI:Q", format=".1%")],
+                    ).properties(height=220)
+                )
+                st.altair_chart(conv_chart, width="stretch")
+
+        st.divider()
+
+        # =============== Section C — Capital Structure ===============
+        st.markdown("### Capital Structure")
+
+        # ---- 8. Leverage & liquidity ----
+        st.markdown("#### 8. Leverage & liquidity (latest period)")
+        st.caption("How much debt is on the balance sheet, and how easily can near-term obligations be met.")
+
+        band_colors = {"good": "#1e8449", "fair": "#b9770e", "poor": "#a93226", "—": "#7f8c8d"}
+        lev_metrics = an_lev["metrics"]
+        lev_bands = an_lev["bands"]
+
+        lev_order = [
+            ("Debt / Equity",      lambda v: _fmt_num(v, 2)),
+            ("Debt / Assets",      lambda v: _fmt_num(v, 2)),
+            ("Net Debt / EBITDA",  lambda v: _fmt_num(v, 2)),
+            ("Interest Coverage",  lambda v: _fmt_num(v, 1) + "×" if pd.notna(v) else "—"),
+            ("Current Ratio",      lambda v: _fmt_num(v, 2)),
+            ("Quick Ratio",        lambda v: _fmt_num(v, 2)),
+            ("Cash Ratio",         lambda v: _fmt_num(v, 2)),
+        ]
+        lc1 = st.columns(4)
+        lc2 = st.columns(4)
+        for i, (name, fmt) in enumerate(lev_order):
+            col = lc1[i] if i < 4 else lc2[i - 4]
+            v = lev_metrics.get(name)
+            band = lev_bands.get(name, "—")
+            color = band_colors[band]
+            col.markdown(
+                f"""
+                <div style="
+                    border-left: 4px solid {color};
+                    border-radius: 6px;
+                    padding: 8px 12px;
+                    background: #f8f9fa;
+                    margin-bottom: 6px;
+                ">
+                    <div style="font-size: 11px; color: #666;">{name}</div>
+                    <div style="font-size: 20px; font-weight: 700;">{fmt(v)}</div>
+                    <div style="font-size: 11px; color: {color}; text-transform: uppercase;">{band}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.caption(
+            "Bands are rough large-cap heuristics, not industry-specific. "
+            "Banks, utilities, and REITs warrant sector-adjusted thresholds."
         )
 
 
