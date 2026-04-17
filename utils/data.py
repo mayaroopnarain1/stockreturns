@@ -325,6 +325,49 @@ def get_daily_changes(tickers: tuple[str, ...]) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------------------
+# Financial statements — income / balance sheet / cash flow
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False, ttl="24h")
+def get_financials(symbol: str, freq: str = "annual") -> dict:
+    """Fetch the three core financial statements for a single ticker.
+
+    freq: "annual" (default) or "quarterly". Returns a dict with keys
+    ``income``, ``balance``, ``cashflow`` — each a DataFrame with line items
+    on the index and periods on the columns, ordered oldest → newest.
+    Missing statements are returned as empty DataFrames so callers can
+    render gracefully.
+    """
+    empty = {"income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame()}
+    try:
+        t = yf.Ticker(symbol)
+        if freq == "quarterly":
+            inc = t.quarterly_income_stmt
+            bal = t.quarterly_balance_sheet
+            cf = t.quarterly_cashflow
+        else:
+            inc = t.income_stmt
+            bal = t.balance_sheet
+            cf = t.cashflow
+    except Exception:
+        return empty
+
+    def _prep(df):
+        if df is None or (hasattr(df, "empty") and df.empty):
+            return pd.DataFrame()
+        # yfinance returns columns as period-end Timestamps, newest first.
+        # Sort oldest → newest for natural left-to-right trend rendering.
+        df = df.copy()
+        try:
+            df = df.reindex(sorted(df.columns), axis=1)
+        except Exception:
+            pass
+        return df
+
+    return {"income": _prep(inc), "balance": _prep(bal), "cashflow": _prep(cf)}
+
+
 def get_sector_peers(
     ticker: str,
     sector: str | None,
