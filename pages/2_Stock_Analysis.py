@@ -46,6 +46,7 @@ from utils.financials import (
     leverage_liquidity,
     quality_scorecard,
 )
+from utils.dividends import summarize as dividend_summary
 from utils.metrics import (
     compute_return_metrics,
     compute_technical_signals,
@@ -525,6 +526,116 @@ with tab_fund:
     with gcols[2]:
         st.metric("Free cash flow", f"${fcf/1e9:,.2f}B" if fcf else "—")
         st.caption("Cash left after operating and capex — the fuel for dividends, buybacks, and investment.")
+
+    # --- Dividends (shown only for payers) ---
+    _divs_panel = get_dividends(ticker, period="10y")
+    if _divs_panel is not None and not _divs_panel.empty:
+        st.divider()
+        st.markdown("#### Dividends")
+        st.caption(
+            "Per-share dividend track record and payout sustainability. Sourced from "
+            "declared-DPS XBRL facts in 10-K filings."
+        )
+
+        _divs_stmts = get_financials(ticker, freq="annual")
+        div_sum = dividend_summary(
+            _divs_stmts,
+            _divs_panel,
+            info.get("currentPrice"),
+            close,
+        )
+        hist_df = div_sum["history"]
+
+        # --- Headline metrics ---
+        dm1, dm2, dm3, dm4, dm5 = st.columns(5)
+        y = div_sum["yield"]
+
+        def _fmt_pct(v, digits=2):
+            return f"{v*100:.{digits}f}%" if pd.notna(v) else "—"
+
+        with dm1:
+            st.metric("Current yield", _fmt_pct(y["current_yield"]))
+            if pd.notna(y["avg_yield"]):
+                st.caption(f"{y['n_years']}y avg: {_fmt_pct(y['avg_yield'])}")
+        with dm2:
+            delta_txt = None
+            if pd.notna(y["current_yield"]) and pd.notna(y["avg_yield"]) and y["avg_yield"] > 0:
+                pct_diff = (y["current_yield"] - y["avg_yield"]) / y["avg_yield"] * 100
+                delta_txt = f"{pct_diff:+.0f}% vs {y['n_years']}y avg"
+            st.metric("Rich / cheap vs history", delta_txt or "—",
+                      help="Above the trailing-avg yield = cheaper (higher yield); below = richer.")
+        with dm3:
+            st.metric("5y DPS CAGR", _fmt_pct(div_sum["cagr_5y"], 1))
+            if pd.notna(div_sum["cagr_3y"]):
+                st.caption(f"3y: {_fmt_pct(div_sum['cagr_3y'], 1)}")
+        with dm4:
+            streak = div_sum["streak"]
+            st.metric("Growth streak", f"{streak}y" if streak else "—",
+                      help="Consecutive fiscal years with non-decreasing DPS.")
+        with dm5:
+            pay = div_sum["latest_payout"]
+            pay_txt = _fmt_pct(pay, 0) if pd.notna(pay) else "—"
+            st.metric("Payout ratio", pay_txt,
+                      help="DPS ÷ Diluted EPS. Sustainable usually <60%; >80% is a warning.")
+            if pd.notna(pay):
+                if pay > 0.80:
+                    st.caption("⚠️ High payout — limited reinvestment cushion.")
+                elif pay > 0.60:
+                    st.caption("Elevated payout — watch for EPS pressure.")
+
+        # --- DPS history chart ---
+        if not hist_df.empty:
+            chart_df = hist_df.reset_index().rename(columns={"index": "Year"})
+            chart_df["Year"] = pd.to_datetime(chart_df["Year"]).dt.year.astype(int)
+            bars = (
+                alt.Chart(chart_df)
+                .mark_bar(color="#27ae60")
+                .encode(
+                    x=alt.X("Year:O", title=None),
+                    y=alt.Y("DPS:Q", title="Dividend per share ($)"),
+                    tooltip=[
+                        "Year:O",
+                        alt.Tooltip("DPS:Q", format="$,.2f"),
+                        alt.Tooltip("YoY:Q", format="+.1%", title="YoY"),
+                    ],
+                )
+                .properties(height=220)
+            )
+            labels = (
+                alt.Chart(chart_df.dropna(subset=["YoY"]))
+                .mark_text(dy=-8, fontSize=11, color="#2c3e50")
+                .encode(
+                    x=alt.X("Year:O"),
+                    y=alt.Y("DPS:Q"),
+                    text=alt.Text("YoY:Q", format="+.0%"),
+                )
+            )
+            st.altair_chart(bars + labels, width="stretch")
+
+            # --- Payout ratio trend ---
+            if hist_df["PayoutRatio"].dropna().size >= 2:
+                pr_df = chart_df.dropna(subset=["PayoutRatio"])[["Year", "PayoutRatio"]]
+                band60 = pd.DataFrame({"y": [0.60]})
+                band80 = pd.DataFrame({"y": [0.80]})
+                line = (
+                    alt.Chart(pr_df)
+                    .mark_line(point=True, color="#34495e")
+                    .encode(
+                        x=alt.X("Year:O", title=None),
+                        y=alt.Y("PayoutRatio:Q", axis=alt.Axis(format="%"), title="Payout ratio"),
+                        tooltip=["Year:O", alt.Tooltip("PayoutRatio:Q", format=".0%")],
+                    )
+                )
+                rule60 = alt.Chart(band60).mark_rule(color="#f39c12", strokeDash=[4, 4]).encode(y="y:Q")
+                rule80 = alt.Chart(band80).mark_rule(color="#e74c3c", strokeDash=[4, 4]).encode(y="y:Q")
+                st.altair_chart(
+                    (line + rule60 + rule80).properties(height=180),
+                    width="stretch",
+                )
+                st.caption(
+                    "Dashed lines mark the 60% (watch) and 80% (stress) payout thresholds. "
+                    "One-off EPS losses can briefly spike the ratio above 100%."
+                )
 
     # --- Percentile strip (if peer context on) ---
     if show_peer_context and not universe_df.empty:
