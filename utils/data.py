@@ -131,11 +131,37 @@ def get_price_history_dates(symbol: str, start: str, end: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, ttl="6h")
 def get_ticker_info(symbol: str) -> dict:
-    """Return the .info dict for a single ticker. Returns {} on failure."""
+    """Return the .info dict for a single ticker, enriched with EDGAR fundamentals.
+
+    yfinance provides sector, industry, price, market cap and the 50+ other
+    fields native to ``.info``. EDGAR overlays authoritative XBRL-derived
+    values (margins, ROE, ROA, revenue growth, trailing EPS, book value,
+    shares outstanding). When yfinance returns empty (throttled or missing
+    ticker), the EDGAR overlay alone keeps the page usable.
+    """
     try:
-        return dict(yf.Ticker(symbol).info)
+        yf_info = dict(yf.Ticker(symbol).info)
     except Exception:
-        return {}
+        yf_info = {}
+
+    # Best-effort EDGAR enrichment. Silently skipped when EDGAR doesn't cover
+    # the ticker, the circuit breaker is open, or any other error occurs.
+    try:
+        edgar_extras = edgar_provider.get_ticker_extras(symbol)
+    except (ProviderNotCovered, ProviderError):
+        edgar_extras = {}
+    except Exception:
+        edgar_extras = {}
+
+    # EDGAR wins on the overlap where both are present — its values come
+    # straight from signed filings rather than Yahoo's derived view. But
+    # fields yfinance uniquely provides (sector, beta, marketCap, etc.)
+    # pass through unchanged.
+    merged = dict(yf_info)
+    for k, v in edgar_extras.items():
+        if v is not None:
+            merged[k] = v
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -403,12 +429,63 @@ def _yf_financials(symbol: str, freq: str) -> dict:
     return {"income": _prep(inc), "balance": _prep(bal), "cashflow": _prep(cf)}
 
 
+# Rows the downstream financials analytics (utils/financials.py) actually
+# consume. If EDGAR returns a statement with ANY of these rows all-NaN, we
+# fetch yfinance and fill that row in — correcting EDGAR's concept-tagging
+# gaps rather than swallowing them as junk output.
+_CRITICAL_FINANCIAL_ROWS: dict[str, tuple[str, ...]] = {
+    "income": ("Total Revenue", "Net Income", "Operating Income",
+               "Gross Profit", "Pretax Income", "Tax Provision"),
+    "balance": ("Total Assets", "Stockholders Equity",
+                "Current Liabilities", "Current Assets"),
+    "cashflow": ("Operating Cash Flow", "Capital Expenditure"),
+}
+
+
+def _fill_missing_rows(edgar_stmts: dict, yf_stmts: dict) -> dict:
+    """Copy rows from yfinance into EDGAR result where the EDGAR row is all-NaN.
+
+    Mutates and returns a new dict. Only the critical rows listed above are
+    considered — we don't want to overwrite legitimately absent line items
+    that simply weren't requested, or churn labels that already carry data.
+    """
+    out = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in edgar_stmts.items()}
+    for statement, critical in _CRITICAL_FINANCIAL_ROWS.items():
+        edf = out.get(statement)
+        yf_df = yf_stmts.get(statement) if yf_stmts else None
+        if edf is None or edf.empty or yf_df is None or yf_df.empty:
+            continue
+        yf_norm = {str(i).strip().lower(): i for i in yf_df.index}
+        for row_label in critical:
+            if row_label not in edf.index:
+                continue
+            if not edf.loc[row_label].isna().all():
+                continue
+            yf_key = yf_norm.get(row_label.strip().lower())
+            if yf_key is None:
+                continue
+            yf_row = pd.to_numeric(yf_df.loc[yf_key], errors="coerce")
+            # Align yfinance periods onto EDGAR columns; leave NaN where
+            # no matching period exists.
+            aligned = pd.Series(
+                {c: yf_row.get(c, float("nan")) for c in edf.columns},
+                index=edf.columns,
+                dtype=float,
+            )
+            if aligned.notna().any():
+                out[statement].loc[row_label] = aligned
+    return out
+
+
 @st.cache_data(show_spinner=False, ttl="24h")
 def get_financials(symbol: str, freq: str = "annual") -> dict:
     """Fetch the three core financial statements for a single ticker.
 
     EDGAR primary — XBRL from 10-K (annual) or 10-Q (quarterly). yfinance
-    fallback for tickers without EDGAR coverage (ADRs / foreign issuers).
+    fallback when EDGAR doesn't cover the ticker (ADRs / foreign issuers) AND
+    row-level fill when EDGAR returns a statement where a critical line item
+    (Revenue, Net Income, etc.) is all-NaN because the filer tagged it under
+    a non-standard concept.
 
     freq: "annual" (default) or "quarterly". Returns a dict with keys
     ``income``, ``balance``, ``cashflow`` — each a DataFrame with line items
@@ -417,13 +494,30 @@ def get_financials(symbol: str, freq: str = "annual") -> dict:
     can render gracefully.
     """
     try:
-        return edgar_provider.get_financials(symbol, freq=freq)
-    except ProviderNotCovered:
-        return _yf_financials(symbol, freq)
-    except ProviderError:
+        edgar_stmts = edgar_provider.get_financials(symbol, freq=freq)
+    except (ProviderNotCovered, ProviderError):
         return _yf_financials(symbol, freq)
     except Exception:
         return _yf_financials(symbol, freq)
+
+    # Row-level fill: only bother calling yfinance if at least one critical
+    # row is empty. For the common AAPL/MSFT case this costs nothing.
+    needs_fill = False
+    for statement, rows in _CRITICAL_FINANCIAL_ROWS.items():
+        df = edgar_stmts.get(statement)
+        if df is None or df.empty:
+            continue
+        for row in rows:
+            if row in df.index and df.loc[row].isna().all():
+                needs_fill = True
+                break
+        if needs_fill:
+            break
+    if not needs_fill:
+        return edgar_stmts
+
+    yf_stmts = _yf_financials(symbol, freq)
+    return _fill_missing_rows(edgar_stmts, yf_stmts)
 
 
 def get_sector_peers(

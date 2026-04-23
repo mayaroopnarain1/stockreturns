@@ -123,23 +123,22 @@ def _rsi_bucket(value: float | None) -> str:
     return f"Neutral ({value:.0f})"
 
 
-def _5d_change(symbol: str) -> float | None:
-    """Pull 1mo history, compute last 5-session % change."""
-    hist = get_price_history(symbol, "1mo")
-    if hist.empty or len(hist) < 6:
-        return None
-    close = hist["Close"]
-    return float((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6] * 100)
-
-
-def _rsi_latest(symbol: str) -> float | None:
+def _ticker_trailing_stats(symbol: str) -> dict:
+    """Fetch one 3mo price history per ticker and derive both 5-day % change
+    and the latest RSI from it. Saves a full yfinance call per watchlist row
+    vs. the prior pattern of two independent fetches."""
     hist = get_price_history(symbol, "3mo")
-    if hist.empty or len(hist) < 30:
-        return None
-    series = rsi(hist["Close"])
-    if series is None or series.empty or pd.isna(series.iloc[-1]):
-        return None
-    return float(series.iloc[-1])
+    out = {"change_5d": None, "rsi": None}
+    if hist.empty:
+        return out
+    close = hist["Close"]
+    if len(close) >= 6:
+        out["change_5d"] = float((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6] * 100)
+    if len(close) >= 30:
+        series = rsi(close)
+        if series is not None and not series.empty and not pd.isna(series.iloc[-1]):
+            out["rsi"] = float(series.iloc[-1])
+    return out
 
 
 def _next_earnings(symbol: str) -> dt.datetime | None:
@@ -174,8 +173,9 @@ with st.spinner("Computing status..."):
             price = None
             pct_1d = None
 
-        pct_5d = _5d_change(t)
-        rsi_val = _rsi_latest(t)
+        trailing = _ticker_trailing_stats(t)
+        pct_5d = trailing["change_5d"]
+        rsi_val = trailing["rsi"]
         next_er = _next_earnings(t)
         days_to_er = (next_er.date() - today).days if next_er else None
 
