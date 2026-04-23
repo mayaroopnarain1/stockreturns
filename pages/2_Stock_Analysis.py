@@ -46,6 +46,7 @@ from utils.financials import (
     leverage_liquidity,
     quality_scorecard,
 )
+from utils.dividends import summarize as dividend_summary
 from utils.metrics import (
     compute_return_metrics,
     compute_technical_signals,
@@ -54,6 +55,8 @@ from utils.metrics import (
     bollinger_bands,
     moving_averages,
     detect_outlier_days,
+    monthly_seasonality,
+    MONTH_ABBR,
     METRIC_DESC,
     FUNDAMENTAL_DESC,
     TECHNICAL_DESC,
@@ -523,6 +526,116 @@ with tab_fund:
     with gcols[2]:
         st.metric("Free cash flow", f"${fcf/1e9:,.2f}B" if fcf else "—")
         st.caption("Cash left after operating and capex — the fuel for dividends, buybacks, and investment.")
+
+    # --- Dividends (shown only for payers) ---
+    _divs_panel = get_dividends(ticker, period="10y")
+    if _divs_panel is not None and not _divs_panel.empty:
+        st.divider()
+        st.markdown("#### Dividends")
+        st.caption(
+            "Per-share dividend track record and payout sustainability. Sourced from "
+            "declared-DPS XBRL facts in 10-K filings."
+        )
+
+        _divs_stmts = get_financials(ticker, freq="annual")
+        div_sum = dividend_summary(
+            _divs_stmts,
+            _divs_panel,
+            info.get("currentPrice"),
+            close,
+        )
+        hist_df = div_sum["history"]
+
+        # --- Headline metrics ---
+        dm1, dm2, dm3, dm4, dm5 = st.columns(5)
+        y = div_sum["yield"]
+
+        def _fmt_pct(v, digits=2):
+            return f"{v*100:.{digits}f}%" if pd.notna(v) else "—"
+
+        with dm1:
+            st.metric("Current yield", _fmt_pct(y["current_yield"]))
+            if pd.notna(y["avg_yield"]):
+                st.caption(f"{y['n_years']}y avg: {_fmt_pct(y['avg_yield'])}")
+        with dm2:
+            delta_txt = None
+            if pd.notna(y["current_yield"]) and pd.notna(y["avg_yield"]) and y["avg_yield"] > 0:
+                pct_diff = (y["current_yield"] - y["avg_yield"]) / y["avg_yield"] * 100
+                delta_txt = f"{pct_diff:+.0f}% vs {y['n_years']}y avg"
+            st.metric("Rich / cheap vs history", delta_txt or "—",
+                      help="Above the trailing-avg yield = cheaper (higher yield); below = richer.")
+        with dm3:
+            st.metric("5y DPS CAGR", _fmt_pct(div_sum["cagr_5y"], 1))
+            if pd.notna(div_sum["cagr_3y"]):
+                st.caption(f"3y: {_fmt_pct(div_sum['cagr_3y'], 1)}")
+        with dm4:
+            streak = div_sum["streak"]
+            st.metric("Growth streak", f"{streak}y" if streak else "—",
+                      help="Consecutive fiscal years with non-decreasing DPS.")
+        with dm5:
+            pay = div_sum["latest_payout"]
+            pay_txt = _fmt_pct(pay, 0) if pd.notna(pay) else "—"
+            st.metric("Payout ratio", pay_txt,
+                      help="DPS ÷ Diluted EPS. Sustainable usually <60%; >80% is a warning.")
+            if pd.notna(pay):
+                if pay > 0.80:
+                    st.caption("⚠️ High payout — limited reinvestment cushion.")
+                elif pay > 0.60:
+                    st.caption("Elevated payout — watch for EPS pressure.")
+
+        # --- DPS history chart ---
+        if not hist_df.empty:
+            chart_df = hist_df.reset_index().rename(columns={"index": "Year"})
+            chart_df["Year"] = pd.to_datetime(chart_df["Year"]).dt.year.astype(int)
+            bars = (
+                alt.Chart(chart_df)
+                .mark_bar(color="#27ae60")
+                .encode(
+                    x=alt.X("Year:O", title=None),
+                    y=alt.Y("DPS:Q", title="Dividend per share ($)"),
+                    tooltip=[
+                        "Year:O",
+                        alt.Tooltip("DPS:Q", format="$,.2f"),
+                        alt.Tooltip("YoY:Q", format="+.1%", title="YoY"),
+                    ],
+                )
+                .properties(height=220)
+            )
+            labels = (
+                alt.Chart(chart_df.dropna(subset=["YoY"]))
+                .mark_text(dy=-8, fontSize=11, color="#2c3e50")
+                .encode(
+                    x=alt.X("Year:O"),
+                    y=alt.Y("DPS:Q"),
+                    text=alt.Text("YoY:Q", format="+.0%"),
+                )
+            )
+            st.altair_chart(bars + labels, width="stretch")
+
+            # --- Payout ratio trend ---
+            if hist_df["PayoutRatio"].dropna().size >= 2:
+                pr_df = chart_df.dropna(subset=["PayoutRatio"])[["Year", "PayoutRatio"]]
+                band60 = pd.DataFrame({"y": [0.60]})
+                band80 = pd.DataFrame({"y": [0.80]})
+                line = (
+                    alt.Chart(pr_df)
+                    .mark_line(point=True, color="#34495e")
+                    .encode(
+                        x=alt.X("Year:O", title=None),
+                        y=alt.Y("PayoutRatio:Q", axis=alt.Axis(format="%"), title="Payout ratio"),
+                        tooltip=["Year:O", alt.Tooltip("PayoutRatio:Q", format=".0%")],
+                    )
+                )
+                rule60 = alt.Chart(band60).mark_rule(color="#f39c12", strokeDash=[4, 4]).encode(y="y:Q")
+                rule80 = alt.Chart(band80).mark_rule(color="#e74c3c", strokeDash=[4, 4]).encode(y="y:Q")
+                st.altair_chart(
+                    (line + rule60 + rule80).properties(height=180),
+                    width="stretch",
+                )
+                st.caption(
+                    "Dashed lines mark the 60% (watch) and 80% (stress) payout thresholds. "
+                    "One-off EPS losses can briefly spike the ratio above 100%."
+                )
 
     # --- Percentile strip (if peer context on) ---
     if show_peer_context and not universe_df.empty:
@@ -1331,6 +1444,157 @@ with tab_events:
         })
     tl_df = pd.DataFrame(timeline_rows)
     st.dataframe(tl_df, width="stretch", hide_index=True)
+
+    # --- Monthly seasonality ---
+    st.divider()
+    with st.expander("Monthly seasonality (10y)", expanded=False):
+        st.caption(
+            "Average calendar-month return for this ticker, SPY, and the sector ETF. "
+            "The third row isolates the ticker's **excess** seasonality over SPY so "
+            "market-wide patterns don't masquerade as stock-specific ones. "
+            "Treat ≤10 observations per month as suggestive, not predictive."
+        )
+
+        def _close_10y(sym):
+            hist = get_price_history(sym, "10y")
+            return hist["Close"] if not hist.empty else pd.Series(dtype=float)
+
+        season_prices_t = _close_10y(ticker)
+        season_prices_spy = _close_10y("SPY")
+        sector_etf_season = get_sector_etf(sector)
+        season_prices_sect = (
+            _close_10y(sector_etf_season)
+            if sector_etf_season and sector_etf_season != "SPY"
+            else pd.Series(dtype=float)
+        )
+
+        season_t = monthly_seasonality(season_prices_t, lookback_years=10)
+        season_spy = monthly_seasonality(season_prices_spy, lookback_years=10)
+        season_sect = monthly_seasonality(season_prices_sect, lookback_years=10) if not season_prices_sect.empty else None
+
+        if season_t["stats"]["n"].fillna(0).sum() == 0:
+            st.info("Not enough price history to compute seasonality (need at least 12 months).")
+        else:
+            # Build long-format frame for Altair
+            rows = []
+            stats_t = season_t["stats"]
+            stats_spy = season_spy["stats"]
+            for m in range(1, 13):
+                t_mean = stats_t.loc[m, "mean"] if m in stats_t.index else float("nan")
+                t_hit  = stats_t.loc[m, "hit_rate"] if m in stats_t.index else float("nan")
+                t_n    = stats_t.loc[m, "n"] if m in stats_t.index else 0
+                rows.append({
+                    "Series": ticker, "Month": MONTH_ABBR[m-1], "month_num": m,
+                    "MeanReturn": t_mean, "HitRate": t_hit, "N": int(t_n) if pd.notna(t_n) else 0,
+                })
+                spy_mean = stats_spy.loc[m, "mean"] if m in stats_spy.index else float("nan")
+                spy_hit  = stats_spy.loc[m, "hit_rate"] if m in stats_spy.index else float("nan")
+                spy_n    = stats_spy.loc[m, "n"] if m in stats_spy.index else 0
+                rows.append({
+                    "Series": "SPY", "Month": MONTH_ABBR[m-1], "month_num": m,
+                    "MeanReturn": spy_mean, "HitRate": spy_hit, "N": int(spy_n) if pd.notna(spy_n) else 0,
+                })
+                # Ticker excess over SPY
+                excess = (t_mean - spy_mean) if (pd.notna(t_mean) and pd.notna(spy_mean)) else float("nan")
+                rows.append({
+                    "Series": f"{ticker} − SPY", "Month": MONTH_ABBR[m-1], "month_num": m,
+                    "MeanReturn": excess, "HitRate": float("nan"),
+                    "N": int(t_n) if pd.notna(t_n) else 0,
+                })
+                if season_sect is not None:
+                    sect_stats = season_sect["stats"]
+                    s_mean = sect_stats.loc[m, "mean"] if m in sect_stats.index else float("nan")
+                    s_hit  = sect_stats.loc[m, "hit_rate"] if m in sect_stats.index else float("nan")
+                    s_n    = sect_stats.loc[m, "n"] if m in sect_stats.index else 0
+                    rows.append({
+                        "Series": sector_etf_season, "Month": MONTH_ABBR[m-1], "month_num": m,
+                        "MeanReturn": s_mean, "HitRate": s_hit, "N": int(s_n) if pd.notna(s_n) else 0,
+                    })
+
+            season_df = pd.DataFrame(rows)
+            series_order = [ticker]
+            if season_sect is not None:
+                series_order.append(sector_etf_season)
+            series_order.extend(["SPY", f"{ticker} − SPY"])
+
+            # Symmetric color domain so red/green are visually comparable.
+            mag = float(season_df["MeanReturn"].abs().dropna().quantile(0.95)) if not season_df["MeanReturn"].dropna().empty else 0.03
+            mag = max(mag, 0.01)
+
+            heatmap = (
+                alt.Chart(season_df.dropna(subset=["MeanReturn"]))
+                .mark_rect()
+                .encode(
+                    x=alt.X("Month:N", sort=list(MONTH_ABBR), title=None),
+                    y=alt.Y("Series:N", sort=series_order, title=None),
+                    color=alt.Color(
+                        "MeanReturn:Q",
+                        scale=alt.Scale(
+                            domain=[-mag, 0, mag],
+                            range=["#e74c3c", "#f5f5f5", "#2ecc71"],
+                        ),
+                        legend=alt.Legend(format=".1%", title="Avg return"),
+                    ),
+                    tooltip=[
+                        "Series:N", "Month:N",
+                        alt.Tooltip("MeanReturn:Q", format="+.2%", title="Mean"),
+                        alt.Tooltip("HitRate:Q", format=".0%", title="% positive"),
+                        alt.Tooltip("N:Q", title="Observations"),
+                    ],
+                )
+                .properties(height=28 * len(series_order) + 40)
+            )
+            labels = (
+                alt.Chart(season_df.dropna(subset=["MeanReturn"]))
+                .mark_text(fontSize=11)
+                .encode(
+                    x=alt.X("Month:N", sort=list(MONTH_ABBR)),
+                    y=alt.Y("Series:N", sort=series_order),
+                    text=alt.Text("MeanReturn:Q", format="+.1%"),
+                    color=alt.condition(
+                        "abs(datum.MeanReturn) > " + f"{mag * 0.6}",
+                        alt.value("white"), alt.value("#222"),
+                    ),
+                )
+            )
+            st.altair_chart((heatmap + labels), width="stretch")
+
+            # Headline stats for the ticker
+            ticker_stats = stats_t.dropna(subset=["mean"])
+            if not ticker_stats.empty:
+                best_m = int(ticker_stats["mean"].idxmax())
+                worst_m = int(ticker_stats["mean"].idxmin())
+                avg_hit = ticker_stats["hit_rate"].mean()
+                s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+                s_col1.metric(
+                    "Best month",
+                    MONTH_ABBR[best_m - 1],
+                    f"{ticker_stats.loc[best_m, 'mean']*100:+.1f}% avg",
+                )
+                s_col2.metric(
+                    "Worst month",
+                    MONTH_ABBR[worst_m - 1],
+                    f"{ticker_stats.loc[worst_m, 'mean']*100:+.1f}% avg",
+                )
+                s_col3.metric(
+                    "Avg hit rate",
+                    f"{avg_hit*100:.0f}%",
+                    help="Share of months with a positive return, averaged across all 12 calendar months.",
+                )
+                s_col4.metric(
+                    "Window",
+                    f"{season_t['n_years']}y",
+                    help=(
+                        f"{season_t['start'].strftime('%b %Y')} – {season_t['end'].strftime('%b %Y')}"
+                        if season_t.get("start") is not None else ""
+                    ),
+                )
+
+            if season_t["n_years"] < 5:
+                st.caption(
+                    f"⚠️ Only ~{season_t['n_years']} year(s) of data — too little to separate signal from noise. "
+                    "Treat as a data-availability note, not a finding."
+                )
 
     # --- Upcoming earnings ---
     ed = get_earnings_dates(ticker)

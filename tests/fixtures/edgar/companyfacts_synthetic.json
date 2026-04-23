@@ -1,0 +1,85 @@
+{
+  "cik": 320193,
+  "entityName": "Synthetic Corp",
+  "facts": {
+    "us-gaap": {
+      "Revenues": {
+        "label": "Revenues",
+        "units": {
+          "USD": [
+            {"end": "2022-12-31", "val": 100000000, "fy": 2022, "fp": "FY", "form": "10-K", "filed": "2023-02-15", "accn": "0000-22-000001"},
+            {"end": "2023-12-31", "val": 110000000, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15", "accn": "0000-23-000001"},
+            {"end": "2023-12-31", "val": 111000000, "fy": 2023, "fp": "FY", "form": "10-K/A", "filed": "2024-05-01", "accn": "0000-23-000002"},
+            {"end": "2024-06-30", "val": 60000000, "fy": 2024, "fp": "Q2", "form": "10-Q", "filed": "2024-07-31", "accn": "0000-24-000010"},
+            {"end": "2024-12-31", "val": 120000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15", "accn": "0000-24-000001"}
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "label": "Net income",
+        "units": {
+          "USD": [
+            {"end": "2023-12-31", "val": 20000000, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15", "accn": "0000-23-000001"},
+            {"end": "2024-12-31", "val": 25000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15", "accn": "0000-24-000001"}
+          ]
+        }
+      },
+      "Assets": {
+        "label": "Total assets",
+        "units": {
+          "USD": [
+            {"end": "2023-12-31", "val": 500000000, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"},
+            {"end": "2024-12-31", "val": 550000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      },
+      "StockholdersEquity": {
+        "label": "Equity",
+        "units": {
+          "USD": [
+            {"end": "2023-12-31", "val": 300000000, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"},
+            {"end": "2024-12-31", "val": 330000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      },
+      "NetCashProvidedByUsedInOperatingActivities": {
+        "label": "Operating cash flow",
+        "units": {
+          "USD": [
+            {"end": "2023-12-31", "val": 30000000, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"},
+            {"end": "2024-12-31", "val": 35000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      },
+      "PaymentsToAcquirePropertyPlantAndEquipment": {
+        "label": "CapEx",
+        "units": {
+          "USD": [
+            {"end": "2023-12-31", "val": 8000000, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"},
+            {"end": "2024-12-31", "val": 9000000, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      },
+      "CommonStockDividendsPerShareDeclared": {
+        "label": "DPS declared",
+        "units": {
+          "USD/shares": [
+            {"end": "2023-12-31", "val": 1.50, "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"},
+            {"end": "2024-12-31", "val": 1.75, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      },
+      "EarningsPerShareDiluted": {
+        "label": "Diluted EPS",
+        "units": {
+          "USD/shares": [
+            {"end": "2024-03-31", "val": 0.50, "fy": 2024, "fp": "Q1", "form": "10-Q", "filed": "2024-04-30"},
+            {"end": "2024-06-30", "val": 0.55, "fy": 2024, "fp": "Q2", "form": "10-Q", "filed": "2024-07-31"},
+            {"end": "2024-09-30", "val": 0.60, "fy": 2024, "fp": "Q3", "form": "10-Q", "filed": "2024-10-31"},
+            {"end": "2024-12-31", "val": 2.40, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-15"}
+          ]
+        }
+      }
+    }
+  }
+}

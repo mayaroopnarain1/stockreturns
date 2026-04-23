@@ -2,7 +2,7 @@
 
 A multi-page Streamlit app for equity research, comparison, and portfolio construction. Built for self-directed investors and MBA-level finance students who want transparent, rules-based output rather than black-box scores.
 
-No API keys required — all market data comes live from Yahoo Finance via [`yfinance`](https://github.com/ranaroussi/yfinance).
+Fundamentals come direct from **SEC EDGAR** (authoritative XBRL from 10-K/10-Q filings) for US issuers. Prices, macro tickers, and anything EDGAR doesn't cover (ADRs, foreign issuers) use [`yfinance`](https://github.com/ranaroussi/yfinance). No paid API keys required — just a User-Agent contact email (see [EDGAR configuration](#sec-edgar-configuration)).
 
 ## What's inside
 
@@ -42,6 +42,23 @@ streamlit run streamlit_app.py
 
 Streamlit opens the app at http://localhost:8501.
 
+## SEC EDGAR configuration
+
+EDGAR's fair-access policy requires every request to carry a real contact
+email in the User-Agent header. Copy the example secrets file and set yours:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+# then edit .streamlit/secrets.toml and replace the placeholder email
+```
+
+Alternatively, export `EDGAR_USER_AGENT="YourApp/1.0 you@example.com"` as an
+environment variable. If neither is set, the app uses a generic placeholder
+and SEC may throttle heavy usage.
+
+Raw EDGAR JSON responses are cached to `./​.edgar_cache/` (gitignored) so
+container restarts don't trigger a full refetch.
+
 ## How the verdict engine works
 
 For a given ticker, four sub-scores (each 0–100) are computed from transparent rules:
@@ -75,7 +92,13 @@ Stocks/
 │   ├── 5_Watchlist.py
 │   └── archive/              # Legacy pages, preserved
 ├── utils/
-│   ├── data.py               # yfinance wrappers (cached)
+│   ├── data.py               # Data façade; dispatches to providers (cached)
+│   ├── providers/            # SEC EDGAR (primary) + yfinance (fallback)
+│   │   ├── edgar_client.py   # HTTP client — rate limit, retries, disk cache
+│   │   ├── edgar_provider.py # Statements / dividends / earnings from XBRL
+│   │   ├── xbrl_concepts.py  # Concept aliases + fact-series resolver
+│   │   └── ticker_cik.py     # Ticker → CIK lookup
+│   ├── financials.py         # Statement-derived analytics (DuPont, ROIC, etc.)
 │   ├── metrics.py            # return / risk / technical calculations
 │   ├── prescription.py       # verdict engine + investor profiles
 │   └── watchlist.py          # JSON-backed persistence
@@ -83,9 +106,18 @@ Stocks/
 └── README.md
 ```
 
-## Caching
+## Data sources
 
-All yfinance calls go through `utils/data.py` with TTL caches so repeat usage is fast and polite to Yahoo's servers:
+| Capability                             | Primary        | Fallback | Notes |
+|----------------------------------------|----------------|----------|-------|
+| Financial statements (IS / BS / CF)    | **EDGAR** XBRL | yfinance | authoritative 10-K / 10-Q |
+| Historical earnings dates              | **EDGAR**      | yfinance | yfinance fills forward dates |
+| Dividends per share                    | **EDGAR**      | yfinance |       |
+| Bulk fundamentals (screener)           | yfinance       | —        | EDGAR `/frames/` rewrite planned |
+| Per-ticker `.info` (sector, multiples) | yfinance       | —        | price-derived fields stay here |
+| Price history / macro / heatmap        | yfinance       | —        | not in EDGAR |
+
+All fetches go through `utils/data.py` with TTL caches so repeat usage is fast:
 
 | Data                              | Cache TTL |
 |-----------------------------------|-----------|
@@ -94,16 +126,18 @@ All yfinance calls go through `utils/data.py` with TTL caches so repeat usage is
 | Dividends                         | 6 hours   |
 | Price history                     | 6 hours   |
 | Earnings dates                    | 12 hours  |
-| Single-ticker `.info`             | 12 hours  |
+| Single-ticker `.info`             | 6 hours   |
 | S&P 500 bulk fundamentals         | 12 hours  |
+| Financial statements              | 24 hours  |
+| EDGAR raw JSON (disk)             | 24 hours  |
 
-The Screener's first run fetches fundamentals for all 500 names and takes 3–8 minutes. Subsequent runs within 12 hours are instant.
+The Screener's first run fetches fundamentals for all 500 names and takes 3–8 minutes today. A planned rewrite onto EDGAR's `/frames/` endpoint will drop this to well under a minute.
 
 ## Data caveats
 
-Yahoo Finance is free and convenient, but it's a best-effort data source:
-- Some tickers have spotty `earnings_dates` coverage — overlays silently drop missing dates.
-- Fundamentals can differ from what broker dashboards show (different vendors, different fiscal-period cutoffs).
+- EDGAR covers US issuers only. ADRs and foreign private issuers fall back to yfinance automatically.
+- XBRL concept tagging varies between filers. The concept-alias resolver in `utils/providers/xbrl_concepts.py` handles the common variants; unusual small-caps may still surface gaps.
+- Yahoo fundamentals can differ from broker dashboards (vendor differences, fiscal-period cutoffs).
 - Don't use this for real trading decisions without cross-checking against a primary source.
 
 ## Disclaimer

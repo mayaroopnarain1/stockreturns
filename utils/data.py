@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
 """
 Shared data-fetching helpers and constants.
-All yfinance calls go through this module so caching is consistent.
+
+For US issuers, SEC EDGAR is the primary source for authoritative fundamentals
+(statements, dividends, historical earnings dates). yfinance remains primary
+for price-shaped data (quotes, macro, daily changes) and the fallback for any
+ticker EDGAR does not cover (ADRs, foreign issuers). All caching stays here so
+Streamlit behaviour is unchanged.
 """
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+
+from utils.providers import ProviderError, ProviderNotCovered
+from utils.providers import edgar_provider
 
 
 # ---------------------------------------------------------------------------
@@ -205,32 +213,53 @@ def get_macro_snapshot() -> dict:
 # Events — earnings dates and dividends for the Price & Events overlay
 # ---------------------------------------------------------------------------
 
-@st.cache_data(show_spinner=False, ttl="12h")
-def get_earnings_dates(symbol: str) -> pd.DataFrame:
-    """Return known past & future earnings dates for a ticker.
-
-    yfinance coverage is spotty — some tickers return None or empty. Callers
-    should handle an empty DataFrame without erroring.
-    """
+def _yf_earnings_dates(symbol: str) -> pd.DataFrame:
     try:
         ed = yf.Ticker(symbol).earnings_dates
         if ed is None or len(ed) == 0:
             return pd.DataFrame()
         df = ed.copy()
-        # Normalise index to timezone-naive timestamps for easy joining
         df.index = pd.to_datetime(df.index).tz_localize(None) if df.index.tz is not None else pd.to_datetime(df.index)
         return df
     except Exception:
         return pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False, ttl="6h")
-def get_dividends(symbol: str, period: str = "5y") -> pd.Series:
-    """Return a Series of dividend payments (indexed by ex-date, values = $ / share).
+@st.cache_data(show_spinner=False, ttl="12h")
+def get_earnings_dates(symbol: str) -> pd.DataFrame:
+    """Return known earnings dates for a ticker.
 
-    Uses auto_adjust=False to preserve the Dividends column; returns an empty
-    Series on failure.
+    EDGAR supplies historical release dates (from 10-Q / 10-K filings) with
+    authoritative Reported EPS. yfinance is used to fill in any forward-dated
+    entries EDGAR cannot provide (IR-calendar scheduled releases).
     """
+    edgar_df = pd.DataFrame()
+    try:
+        edgar_df = edgar_provider.get_earnings_dates(symbol)
+    except ProviderNotCovered:
+        pass
+    except ProviderError:
+        pass
+    except Exception:
+        pass
+
+    yf_df = _yf_earnings_dates(symbol)
+
+    if edgar_df.empty:
+        return yf_df
+    if yf_df.empty:
+        return edgar_df
+
+    # Merge: keep EDGAR rows (authoritative past) + any yfinance rows that
+    # don't have a matching period end already in EDGAR (typically future).
+    cutoff = edgar_df.index.max()
+    yf_future = yf_df[yf_df.index > cutoff]
+    merged = pd.concat([edgar_df, yf_future]).sort_index()
+    merged = merged[~merged.index.duplicated(keep="first")]
+    return merged
+
+
+def _yf_dividends(symbol: str, period: str) -> pd.Series:
     try:
         hist = yf.Ticker(symbol).history(period=period, auto_adjust=False, actions=True)
         if hist is None or hist.empty or "Dividends" not in hist.columns:
@@ -240,6 +269,23 @@ def get_dividends(symbol: str, period: str = "5y") -> pd.Series:
         return divs
     except Exception:
         return pd.Series(dtype=float)
+
+
+@st.cache_data(show_spinner=False, ttl="6h")
+def get_dividends(symbol: str, period: str = "5y") -> pd.Series:
+    """Return dividends per share indexed by declaration/ex-date.
+
+    EDGAR primary (declared-DPS XBRL facts from 10-K), yfinance fallback for
+    tickers EDGAR does not cover.
+    """
+    try:
+        return edgar_provider.get_dividends(symbol, period=period)
+    except ProviderNotCovered:
+        return _yf_dividends(symbol, period)
+    except ProviderError:
+        return _yf_dividends(symbol, period)
+    except Exception:
+        return _yf_dividends(symbol, period)
 
 
 # ---------------------------------------------------------------------------
@@ -329,16 +375,7 @@ def get_daily_changes(tickers: tuple[str, ...]) -> pd.DataFrame:
 # Financial statements — income / balance sheet / cash flow
 # ---------------------------------------------------------------------------
 
-@st.cache_data(show_spinner=False, ttl="24h")
-def get_financials(symbol: str, freq: str = "annual") -> dict:
-    """Fetch the three core financial statements for a single ticker.
-
-    freq: "annual" (default) or "quarterly". Returns a dict with keys
-    ``income``, ``balance``, ``cashflow`` — each a DataFrame with line items
-    on the index and periods on the columns, ordered oldest → newest.
-    Missing statements are returned as empty DataFrames so callers can
-    render gracefully.
-    """
+def _yf_financials(symbol: str, freq: str) -> dict:
     empty = {"income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame()}
     try:
         t = yf.Ticker(symbol)
@@ -356,8 +393,6 @@ def get_financials(symbol: str, freq: str = "annual") -> dict:
     def _prep(df):
         if df is None or (hasattr(df, "empty") and df.empty):
             return pd.DataFrame()
-        # yfinance returns columns as period-end Timestamps, newest first.
-        # Sort oldest → newest for natural left-to-right trend rendering.
         df = df.copy()
         try:
             df = df.reindex(sorted(df.columns), axis=1)
@@ -366,6 +401,29 @@ def get_financials(symbol: str, freq: str = "annual") -> dict:
         return df
 
     return {"income": _prep(inc), "balance": _prep(bal), "cashflow": _prep(cf)}
+
+
+@st.cache_data(show_spinner=False, ttl="24h")
+def get_financials(symbol: str, freq: str = "annual") -> dict:
+    """Fetch the three core financial statements for a single ticker.
+
+    EDGAR primary — XBRL from 10-K (annual) or 10-Q (quarterly). yfinance
+    fallback for tickers without EDGAR coverage (ADRs / foreign issuers).
+
+    freq: "annual" (default) or "quarterly". Returns a dict with keys
+    ``income``, ``balance``, ``cashflow`` — each a DataFrame with line items
+    on the index and period-end Timestamps on the columns, ordered oldest →
+    newest. Missing statements are returned as empty DataFrames so callers
+    can render gracefully.
+    """
+    try:
+        return edgar_provider.get_financials(symbol, freq=freq)
+    except ProviderNotCovered:
+        return _yf_financials(symbol, freq)
+    except ProviderError:
+        return _yf_financials(symbol, freq)
+    except Exception:
+        return _yf_financials(symbol, freq)
 
 
 def get_sector_peers(
