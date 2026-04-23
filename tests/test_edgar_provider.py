@@ -187,5 +187,47 @@ class ChainFallbackTests(unittest.TestCase):
             self.assertFalse(result["income"].empty)
 
 
+# ---------------------------------------------------------------------------
+# edgar_client.get_json fail-fast on rate-limit
+# ---------------------------------------------------------------------------
+
+class RateLimitFailFastTests(unittest.TestCase):
+    def test_get_json_fails_fast_on_persistent_429(self):
+        """On back-to-back 429s the client should raise after 2 attempts, not 3.
+
+        This keeps the chain fallback to yfinance snappy when SEC is throttling
+        us (typically because we're running without a real contact email).
+        """
+        from utils.providers import edgar_client
+        from utils.providers.errors import ProviderRateLimited
+
+        class _Resp:
+            status_code = 429
+            text = "Too Many Requests"
+
+        calls = {"n": 0}
+
+        def _fake_get(url, headers=None, timeout=None):
+            calls["n"] += 1
+            return _Resp()
+
+        # Use a throwaway cache dir under the tests fixtures path so the
+        # disk-cache doesn't short-circuit the test against a prior run.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(edgar_client.requests, "get", side_effect=_fake_get), \
+                 mock.patch.object(edgar_client, "time", wraps=edgar_client.time) as tmock:
+                # Stub out the sleep so the test doesn't actually wait.
+                tmock.sleep = lambda _s: None
+                with self.assertRaises(ProviderRateLimited):
+                    edgar_client.get_json(
+                        "https://data.sec.gov/fake-429",
+                        cache_dir=td,
+                        ttl_seconds=0,
+                    )
+        # Two attempts total — one initial + one retry before raising.
+        self.assertEqual(calls["n"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

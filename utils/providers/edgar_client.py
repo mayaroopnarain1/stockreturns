@@ -32,9 +32,19 @@ from .errors import ProviderNotCovered, ProviderRateLimited
 EDGAR_API_BASE = "https://data.sec.gov"
 EDGAR_WWW_BASE = "https://www.sec.gov"
 
-DEFAULT_USER_AGENT = "StockLens-OSS stocklens-ops@example.org"
+# Default User-Agent identifies the project via its repo URL so SEC has a real
+# channel (GitHub issues) to reach the maintainer — no fake mailbox. Users who
+# want lenient rate treatment can override via st.secrets or EDGAR_USER_AGENT.
+DEFAULT_USER_AGENT = "StockLens (github.com/mayaroopnarain1/stockreturns)"
 DEFAULT_CACHE_DIR = Path(os.environ.get("EDGAR_CACHE_DIR", ".edgar_cache"))
-DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 h
+
+# Per-endpoint TTLs. Companyfacts reflects 10-K / 10-Q data that rarely changes
+# once filed, so we cache it a full week to minimise SEC traffic. Submissions
+# carry 8-K / Form 4 filings that update more often, so stay at 6 h.
+DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60          # 24 h — generic endpoints
+COMPANYFACTS_TTL_SECONDS = 7 * 24 * 60 * 60       # 7 days
+SUBMISSIONS_TTL_SECONDS = 6 * 60 * 60             # 6 h
+TICKERMAP_TTL_SECONDS = 7 * 24 * 60 * 60          # 7 days
 
 _RATE_LIMIT_PER_SEC = 10
 
@@ -111,9 +121,15 @@ def get_json(
     cache_dir: Path | str | None = None,
     ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
     max_attempts: int = 3,
+    rate_limit_attempts: int = 2,
     timeout: float = 20.0,
 ) -> Any:
     """GET ``url`` and return parsed JSON. Cached to disk and rate-limited.
+
+    ``max_attempts`` governs transient failures (network errors, 5xx).
+    ``rate_limit_attempts`` governs 429/503 — kept small so we fall back to
+    yfinance quickly when SEC is throttling us (typically because we're not
+    supplying a real contact email in the User-Agent).
 
     Raises ``ProviderNotCovered`` on 404 (ticker / concept not in EDGAR).
     Raises ``ProviderRateLimited`` on persistent 429/503.
@@ -132,6 +148,7 @@ def get_json(
     }
 
     last_exc: Exception | None = None
+    rate_limit_hits = 0
     for attempt in range(max_attempts):
         _bucket.acquire()
         try:
@@ -144,8 +161,12 @@ def get_json(
         if resp.status_code == 404:
             raise ProviderNotCovered(f"EDGAR 404 for {url}")
         if resp.status_code in (429, 503):
+            rate_limit_hits += 1
             last_exc = ProviderRateLimited(f"EDGAR {resp.status_code} for {url}")
-            time.sleep(2 ** attempt)
+            if rate_limit_hits >= rate_limit_attempts:
+                # Fail fast so the chain falls to yfinance without a long stall.
+                raise last_exc
+            time.sleep(1)
             continue
         if resp.status_code >= 500:
             last_exc = RuntimeError(f"EDGAR {resp.status_code} for {url}")
