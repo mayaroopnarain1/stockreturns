@@ -128,6 +128,27 @@ def get_financials(symbol: str, freq: str = "annual") -> dict:
         # No usable XBRL — let the chain fall through.
         raise ProviderNotCovered(f"No resolvable statement concepts for {symbol}")
 
+    # Align all three statements to a shared period-end axis. 10-K balance
+    # sheets include a comparative-year instant (both prior-year and
+    # current-year snapshots are tagged as fp=FY), which makes the balance
+    # frame carry one more period than income / cashflow. Downstream
+    # analytics in utils/financials.py combine series across statements and
+    # break when columns don't match — so we enforce yfinance's implicit
+    # "all three statements share the same columns" contract here.
+    non_empty = [s for s in (income, balance, cashflow) if not s.empty]
+    if len(non_empty) >= 2:
+        common = set(non_empty[0].columns)
+        for s in non_empty[1:]:
+            common &= set(s.columns)
+        if common:
+            ordered = sorted(common)
+            if not income.empty:
+                income = income.reindex(columns=ordered)
+            if not balance.empty:
+                balance = balance.reindex(columns=ordered)
+            if not cashflow.empty:
+                cashflow = cashflow.reindex(columns=ordered)
+
     return {"income": income, "balance": balance, "cashflow": cashflow}
 
 

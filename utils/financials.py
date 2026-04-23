@@ -110,6 +110,31 @@ def _period_labels(stmts: dict) -> list[str]:
     return []
 
 
+def _format_cols(cols) -> list[str]:
+    """Stringify period-end values for use as DataFrame column labels."""
+    return [
+        pd.Timestamp(c).strftime("%Y-%m-%d") if not isinstance(c, str) else str(c)
+        for c in cols
+    ]
+
+
+def _apply_labels(df: pd.DataFrame, stmts: dict) -> None:
+    """Set ``df.columns`` using the statements' period-end labels.
+
+    When all three statements share the same period axis (yfinance default,
+    and the contract we now enforce in edgar_provider), this matches the
+    prior behaviour. If a caller somehow produces a DataFrame whose columns
+    diverge from the statements' axis (cross-statement arithmetic broadening
+    the index), fall back to stringifying the DataFrame's own columns so we
+    never crash on a ValueError.
+    """
+    stmt_labels = _period_labels(stmts)
+    if len(stmt_labels) == df.shape[1]:
+        df.columns = stmt_labels
+    else:
+        df.columns = _format_cols(df.columns)
+
+
 def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
     """Element-wise division that returns NaN wherever the denominator is 0 or NaN."""
     num = num.astype(float)
@@ -162,7 +187,7 @@ def dupont_roe(stmts: dict) -> dict:
         "Equity Multiplier": equity_multiplier,
         "ROE":               roe,
     }).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     # Identify which factor explains latest ROE most.
     last = df.iloc[:, -1] if not df.empty else pd.Series(dtype=float)
@@ -205,7 +230,7 @@ def margin_decomposition(stmts: dict) -> dict:
         "Pretax margin":  pm,
         "Net margin":     nm,
     }).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     # Biggest drop between consecutive stages in the latest period.
     biggest_leak = "—"
@@ -271,7 +296,7 @@ def roic_analysis(stmts: dict, wacc_proxy: float = 0.09) -> dict:
         "Effective tax rate": eff_tax,
         "ROIC":              roic,
     }).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     latest = _latest(roic)
     creates_value = None
@@ -304,7 +329,7 @@ def revenue_quality(stmts: dict) -> dict:
         "AR / Revenue":      ar_to_rev,
         "AR YoY":            ar_growth,
     }).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     # 3y CAGR if ≥4 periods of revenue
     cagr = np.nan
@@ -347,7 +372,7 @@ def earnings_quality(stmts: dict) -> dict:
         "(OCF − NI) / |NI|": gap_ratio,
         "Effective tax rate": eff_tax,
     }).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     tax_std = eff_tax.dropna().std() if eff_tax.dropna().size >= 2 else np.nan
     tax_unstable = bool(pd.notna(tax_std) and tax_std > 0.05)
@@ -378,7 +403,7 @@ def accruals_analysis(stmts: dict) -> dict:
     sloan = _safe_div(ni - ocf, avg_assets)
 
     df = pd.DataFrame({"Sloan accrual ratio": sloan}).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     latest = _latest(sloan)
     band = "—"
@@ -414,7 +439,7 @@ def fcf_conversion(stmts: dict) -> dict:
         "FCF":         fcf,
         "FCF / NI":    ratio,
     }).T
-    df.columns = _period_labels(stmts)
+    _apply_labels(df, stmts)
 
     latest = _latest(ratio)
     return {"df": df, "latest": latest}
