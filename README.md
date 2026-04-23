@@ -42,22 +42,28 @@ streamlit run streamlit_app.py
 
 Streamlit opens the app at http://localhost:8501.
 
-## SEC EDGAR configuration
+## SEC EDGAR configuration (optional)
 
-EDGAR's fair-access policy requires every request to carry a real contact
-email in the User-Agent header. Copy the example secrets file and set yours:
+The app runs out of the box with no setup — it identifies itself to SEC
+using the repo URL as its User-Agent. SEC accepts that as a valid contact
+channel (they can reach the maintainer via GitHub issues), so requests go
+through under normal loads.
+
+If you want to be a good citizen or plan to hit EDGAR heavily (e.g. running
+the screener across many tickers back-to-back), you can register a real
+contact email in either of two ways:
 
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# then edit .streamlit/secrets.toml and replace the placeholder email
+# then edit .streamlit/secrets.toml and fill in your email
 ```
 
-Alternatively, export `EDGAR_USER_AGENT="YourApp/1.0 you@example.com"` as an
-environment variable. If neither is set, the app uses a generic placeholder
-and SEC may throttle heavy usage.
+Or set an environment variable: `export EDGAR_USER_AGENT="YourApp/1.0 you@example.com"`.
 
-Raw EDGAR JSON responses are cached to `./​.edgar_cache/` (gitignored) so
-container restarts don't trigger a full refetch.
+**What happens if SEC throttles us?** The request fails fast (≤1 s extra
+latency), the chain falls back to yfinance for that call, and the page
+renders normally. Companyfacts responses are cached locally for 7 days in
+`.edgar_cache/` (gitignored) so a given ticker only hits SEC once per week.
 
 ## How the verdict engine works
 
@@ -129,7 +135,8 @@ All fetches go through `utils/data.py` with TTL caches so repeat usage is fast:
 | Single-ticker `.info`             | 6 hours   |
 | S&P 500 bulk fundamentals         | 12 hours  |
 | Financial statements              | 24 hours  |
-| EDGAR raw JSON (disk)             | 24 hours  |
+| EDGAR companyfacts (disk)         | 7 days    |
+| EDGAR submissions (disk)          | 6 hours   |
 
 The Screener's first run fetches fundamentals for all 500 names and takes 3–8 minutes today. A planned rewrite onto EDGAR's `/frames/` endpoint will drop this to well under a minute.
 

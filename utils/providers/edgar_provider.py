@@ -37,7 +37,7 @@ CASHFLOW_FIELDS = ("operating_cf", "capex")
 def _fetch_companyfacts(symbol: str) -> dict[str, Any]:
     cik = ticker_cik.ticker_to_cik(symbol)
     url = edgar_client.companyfacts_url(cik)
-    payload = edgar_client.get_json(url)
+    payload = edgar_client.get_json(url, ttl_seconds=edgar_client.COMPANYFACTS_TTL_SECONDS)
     if not isinstance(payload, dict) or "facts" not in payload:
         raise ProviderNotCovered(f"No XBRL facts for {symbol} (CIK {cik})")
     return payload
@@ -184,7 +184,7 @@ def get_earnings_dates(symbol: str) -> pd.DataFrame:
     submissions_url = edgar_client.submissions_url(
         ticker_cik.ticker_to_cik(symbol)
     )
-    submissions = edgar_client.get_json(submissions_url)
+    submissions = edgar_client.get_json(submissions_url, ttl_seconds=edgar_client.SUBMISSIONS_TTL_SECONDS)
 
     # Map accession number -> filing date from the submissions "recent" table.
     recent = (submissions.get("filings", {}) or {}).get("recent", {})

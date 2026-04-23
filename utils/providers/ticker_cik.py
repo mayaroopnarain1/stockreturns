@@ -11,9 +11,6 @@ from . import edgar_client
 from .errors import ProviderNotCovered
 
 
-# Cache TTL for the ticker map itself (ticker → CIK mappings change rarely).
-_TICKER_MAP_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
-
 _lock = threading.Lock()
 _cache: dict[str, int] = {}
 _loaded_at: float = 0.0
@@ -50,7 +47,7 @@ def load_ticker_cik_map() -> dict[str, int]:
             return _cache
         raw = edgar_client.get_json(
             edgar_client.company_tickers_url(),
-            ttl_seconds=_TICKER_MAP_TTL_SECONDS,
+            ttl_seconds=edgar_client.TICKERMAP_TTL_SECONDS,
         )
         _cache = _build(raw)
         _loaded_at = time.time()
