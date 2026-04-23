@@ -148,6 +148,71 @@ def detect_outlier_days(returns: pd.Series, z_threshold: float = 3.0) -> pd.Seri
     return returns[z.abs() > z_threshold]
 
 
+MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def monthly_seasonality(prices: pd.Series, lookback_years: int = 10) -> dict:
+    """Compute calendar-month return statistics from a daily Close series.
+
+    Resamples to month-end prices, takes monthly returns, then groups by
+    month-of-year. Returns ``{"stats": DataFrame, "n_years": int, "start":
+    Timestamp|None, "end": Timestamp|None}`` where ``stats`` is indexed by
+    month number 1..12 with columns ``["mean", "median", "hit_rate", "best",
+    "worst", "n"]``. ``hit_rate`` is the share of observations with positive
+    return. Returns an empty stats DataFrame if fewer than 12 monthly
+    observations are available.
+    """
+    empty = {
+        "stats": pd.DataFrame(
+            columns=["mean", "median", "hit_rate", "best", "worst", "n"],
+            index=pd.Index(range(1, 13), name="month"),
+        ),
+        "n_years": 0,
+        "start": None,
+        "end": None,
+    }
+    if prices is None or len(prices) == 0:
+        return empty
+
+    s = prices.copy()
+    s.index = pd.to_datetime(s.index)
+    if getattr(s.index, "tz", None) is not None:
+        s.index = s.index.tz_localize(None)
+
+    # Trim to the requested window (based on the most recent observation).
+    if lookback_years and lookback_years > 0:
+        cutoff = s.index.max() - pd.DateOffset(years=lookback_years)
+        s = s[s.index >= cutoff]
+
+    if len(s) < 2:
+        return empty
+
+    monthly = s.resample("ME").last().pct_change().dropna()
+    if len(monthly) < 12:
+        return empty
+
+    grouped = monthly.groupby(monthly.index.month)
+    stats = pd.DataFrame({
+        "mean":     grouped.mean(),
+        "median":   grouped.median(),
+        "hit_rate": grouped.apply(lambda x: float((x > 0).mean())),
+        "best":     grouped.max(),
+        "worst":    grouped.min(),
+        "n":        grouped.size().astype(int),
+    })
+    stats = stats.reindex(range(1, 13))
+    stats.index.name = "month"
+
+    return {
+        "stats": stats,
+        "n_years": int(len(monthly) // 12),
+        "start": monthly.index.min(),
+        "end": monthly.index.max(),
+    }
+
+
+
 def compute_technical_signals(prices: pd.Series) -> dict:
     """Compute a summary read of technical signals for a price series.
 
