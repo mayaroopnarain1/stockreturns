@@ -69,6 +69,54 @@ class _TokenBucket:
 _bucket = _TokenBucket(_RATE_LIMIT_PER_SEC)
 
 
+# ---------------------------------------------------------------------------
+# Circuit breaker — avoid paying the ~1s retry cost on every request when SEC
+# is throttling us. After `_CB_TRIP_AT` consecutive rate-limit hits, skip
+# EDGAR entirely for `_CB_COOLDOWN_SEC` seconds. After cool-down, allow one
+# probe; if it succeeds, reset. Thread-safe.
+# ---------------------------------------------------------------------------
+
+_CB_TRIP_AT = 3
+_CB_COOLDOWN_SEC = 5 * 60  # 5 minutes
+_cb_lock = threading.Lock()
+_cb_consecutive_rl = 0
+_cb_tripped_until = 0.0
+
+
+def _cb_is_open() -> bool:
+    """Return True if the breaker is tripped (caller should skip EDGAR)."""
+    with _cb_lock:
+        return time.monotonic() < _cb_tripped_until
+
+
+def _cb_record_rate_limit() -> None:
+    """Count a rate-limit response; trip after the threshold."""
+    global _cb_consecutive_rl, _cb_tripped_until
+    with _cb_lock:
+        _cb_consecutive_rl += 1
+        if _cb_consecutive_rl >= _CB_TRIP_AT:
+            _cb_tripped_until = time.monotonic() + _CB_COOLDOWN_SEC
+
+
+def _cb_record_success() -> None:
+    """A good response clears the consecutive-rate-limit counter."""
+    global _cb_consecutive_rl, _cb_tripped_until
+    with _cb_lock:
+        _cb_consecutive_rl = 0
+        _cb_tripped_until = 0.0
+
+
+def circuit_breaker_status() -> dict:
+    """Snapshot for UI reporting."""
+    with _cb_lock:
+        remaining = max(0.0, _cb_tripped_until - time.monotonic())
+    return {
+        "tripped": remaining > 0,
+        "seconds_remaining": int(remaining),
+        "consecutive_rate_limits": _cb_consecutive_rl,
+    }
+
+
 def _user_agent() -> str:
     """Resolve the User-Agent header.
 
@@ -141,6 +189,13 @@ def get_json(
     if cached is not None:
         return cached
 
+    # Circuit breaker: if we've been throttled recently, skip the network
+    # entirely so the chain falls through to yfinance without paying ~1s.
+    if _cb_is_open():
+        raise ProviderRateLimited(
+            "EDGAR circuit breaker open — skipping until cool-down expires"
+        )
+
     headers = {
         "User-Agent": _user_agent(),
         "Accept": "application/json",
@@ -162,9 +217,9 @@ def get_json(
             raise ProviderNotCovered(f"EDGAR 404 for {url}")
         if resp.status_code in (429, 503):
             rate_limit_hits += 1
+            _cb_record_rate_limit()
             last_exc = ProviderRateLimited(f"EDGAR {resp.status_code} for {url}")
             if rate_limit_hits >= rate_limit_attempts:
-                # Fail fast so the chain falls to yfinance without a long stall.
                 raise last_exc
             time.sleep(1)
             continue
@@ -180,6 +235,7 @@ def get_json(
         except ValueError as e:
             raise RuntimeError(f"EDGAR returned non-JSON for {url}") from e
 
+        _cb_record_success()
         _write_cache(cpath, payload)
         return payload
 

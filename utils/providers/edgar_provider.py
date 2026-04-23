@@ -226,3 +226,96 @@ def get_earnings_dates(symbol: str) -> pd.DataFrame:
     df["Surprise(%)"] = float("nan")
     df = df[["EPS Estimate", "Reported EPS", "Surprise(%)"]].sort_index()
     return df
+
+
+# ---------------------------------------------------------------------------
+# Enrichment for get_ticker_info — fields we can authoritatively derive from
+# XBRL when yfinance's `.info` returns empty or partial. Keyed by the same
+# names yfinance uses so the dict slots in as an overlay.
+# ---------------------------------------------------------------------------
+
+def _latest_two(rows: list[dict]) -> tuple[dict | None, dict | None]:
+    """Return (latest, prior) filed-annual records, else (None, None)."""
+    if not rows:
+        return None, None
+    ordered = sorted(rows, key=lambda r: r.get("end", ""))
+    latest = ordered[-1] if ordered else None
+    prior = ordered[-2] if len(ordered) >= 2 else None
+    return latest, prior
+
+
+def get_ticker_extras(symbol: str) -> dict[str, Any]:
+    """Return XBRL-derived fields shaped like yfinance's ``.info`` dict.
+
+    Fields produced (all float/None):
+      ``totalRevenue``, ``freeCashflow``, ``operatingCashflow``,
+      ``profitMargins``, ``operatingMargins``, ``returnOnEquity``,
+      ``returnOnAssets``, ``revenueGrowth``, ``earningsGrowth``,
+      ``trailingEps``, ``bookValue``, ``sharesOutstanding``.
+
+    Raises ``ProviderNotCovered`` for tickers EDGAR doesn't cover so the
+    caller can decide whether to fall through or render what yfinance gives.
+    """
+    facts = _fetch_companyfacts(symbol).get("facts", {})
+
+    def series(field: str) -> list[dict]:
+        return xbrl_concepts.resolve_series(facts, field, freq="annual")
+
+    rev_latest, rev_prior = _latest_two(series("revenue"))
+    ni_latest, ni_prior = _latest_two(series("net_income"))
+    op_latest, _ = _latest_two(series("operating_income"))
+    ocf_latest, _ = _latest_two(series("operating_cf"))
+    capex_latest, _ = _latest_two(series("capex"))
+    assets_latest, assets_prior = _latest_two(series("total_assets"))
+    equity_latest, equity_prior = _latest_two(series("equity"))
+    eps_latest, _ = _latest_two(series("diluted_eps"))
+    shares_latest, _ = _latest_two(series("shares_outstanding"))
+
+    def _val(rec: dict | None) -> float | None:
+        if not rec:
+            return None
+        v = rec.get("val")
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _margin(num: float | None, den: float | None) -> float | None:
+        if num is None or den is None or den == 0:
+            return None
+        return num / den
+
+    def _avg(a: float | None, b: float | None) -> float | None:
+        parts = [x for x in (a, b) if x is not None]
+        return sum(parts) / len(parts) if parts else None
+
+    def _growth(latest: float | None, prior: float | None) -> float | None:
+        if latest is None or prior is None or prior <= 0:
+            return None
+        return (latest - prior) / prior
+
+    revenue = _val(rev_latest)
+    net_income = _val(ni_latest)
+    op_income = _val(op_latest)
+    ocf = _val(ocf_latest)
+    capex_paid = _val(capex_latest)  # positive in XBRL — a cash outflow
+    fcf = (ocf - capex_paid) if (ocf is not None and capex_paid is not None) else None
+
+    extras = {
+        "totalRevenue":      revenue,
+        "operatingCashflow": ocf,
+        "freeCashflow":      fcf,
+        "profitMargins":     _margin(net_income, revenue),
+        "operatingMargins":  _margin(op_income, revenue),
+        "returnOnEquity":    _margin(net_income, _avg(_val(equity_latest), _val(equity_prior))),
+        "returnOnAssets":    _margin(net_income, _avg(_val(assets_latest), _val(assets_prior))),
+        "revenueGrowth":     _growth(revenue, _val(rev_prior)),
+        "earningsGrowth":    _growth(net_income, _val(ni_prior)),
+        "trailingEps":       _val(eps_latest),
+        "sharesOutstanding": _val(shares_latest),
+    }
+    equity_v = _val(equity_latest)
+    shares_v = _val(shares_latest)
+    if equity_v is not None and shares_v and shares_v > 0:
+        extras["bookValue"] = equity_v / shares_v
+    return {k: v for k, v in extras.items() if v is not None}

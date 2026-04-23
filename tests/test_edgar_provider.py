@@ -229,5 +229,107 @@ class RateLimitFailFastTests(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
 
 
+class CircuitBreakerTests(unittest.TestCase):
+    def setUp(self):
+        from utils.providers import edgar_client
+        # Reset breaker state before each test.
+        with edgar_client._cb_lock:
+            edgar_client._cb_consecutive_rl = 0
+            edgar_client._cb_tripped_until = 0.0
+
+    def test_record_rate_limit_trips_after_threshold(self):
+        from utils.providers import edgar_client
+        for _ in range(edgar_client._CB_TRIP_AT):
+            edgar_client._cb_record_rate_limit()
+        self.assertTrue(edgar_client._cb_is_open())
+        self.assertGreater(
+            edgar_client.circuit_breaker_status()["seconds_remaining"], 0
+        )
+
+    def test_success_resets_counter(self):
+        from utils.providers import edgar_client
+        edgar_client._cb_record_rate_limit()
+        edgar_client._cb_record_rate_limit()
+        edgar_client._cb_record_success()
+        self.assertFalse(edgar_client._cb_is_open())
+        self.assertEqual(edgar_client.circuit_breaker_status()["consecutive_rate_limits"], 0)
+
+    def test_open_breaker_short_circuits_get_json(self):
+        """When the breaker is open, get_json must raise without hitting the network."""
+        from utils.providers import edgar_client
+        from utils.providers.errors import ProviderRateLimited
+        # Force open.
+        with edgar_client._cb_lock:
+            edgar_client._cb_tripped_until = float("inf")
+        try:
+            calls = {"n": 0}
+            def _fake(url, headers=None, timeout=None):
+                calls["n"] += 1
+                raise AssertionError("network should not be called when breaker open")
+            with mock.patch.object(edgar_client.requests, "get", side_effect=_fake):
+                with self.assertRaises(ProviderRateLimited):
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as td:
+                        edgar_client.get_json(
+                            "https://data.sec.gov/fake",
+                            cache_dir=td,
+                            ttl_seconds=0,
+                        )
+            self.assertEqual(calls["n"], 0)
+        finally:
+            with edgar_client._cb_lock:
+                edgar_client._cb_tripped_until = 0.0
+
+
+class RowLevelFillTests(unittest.TestCase):
+    """utils.data.get_financials should fill all-NaN critical rows from yfinance."""
+
+    def test_fill_missing_rows_patches_revenue(self):
+        import types
+        # Stub streamlit before importing utils.data.
+        st_stub = types.ModuleType("streamlit")
+        st_stub.cache_data = lambda *a, **kw: (lambda f: f)
+        st_stub.secrets = {}
+        sys.modules["streamlit"] = st_stub
+
+        yf_stub = types.ModuleType("yfinance")
+        class _FakeTicker:
+            def __init__(self, *a, **kw): pass
+        yf_stub.Ticker = _FakeTicker
+        yf_stub.download = lambda *a, **kw: None
+        sys.modules["yfinance"] = yf_stub
+
+        from utils import data as data_mod
+
+        periods = [pd.Timestamp("2023-12-31"), pd.Timestamp("2024-12-31")]
+        # EDGAR result has an all-NaN Total Revenue row; Net Income present.
+        edgar_stmts = {
+            "income": pd.DataFrame(
+                {periods[0]: [float("nan"), 20_000_000],
+                 periods[1]: [float("nan"), 25_000_000]},
+                index=["Total Revenue", "Net Income"],
+            ),
+            "balance": pd.DataFrame(),
+            "cashflow": pd.DataFrame(),
+        }
+        yf_stmts = {
+            "income": pd.DataFrame(
+                {periods[0]: [100_000_000],
+                 periods[1]: [120_000_000]},
+                index=["Total Revenue"],
+            ),
+            "balance": pd.DataFrame(),
+            "cashflow": pd.DataFrame(),
+        }
+        filled = data_mod._fill_missing_rows(edgar_stmts, yf_stmts)
+        self.assertAlmostEqual(
+            filled["income"].loc["Total Revenue", periods[1]], 120_000_000
+        )
+        # Existing Net Income row untouched.
+        self.assertAlmostEqual(
+            filled["income"].loc["Net Income", periods[1]], 25_000_000
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
