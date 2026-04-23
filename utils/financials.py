@@ -126,13 +126,21 @@ def _apply_labels(df: pd.DataFrame, stmts: dict) -> None:
     prior behaviour. If a caller somehow produces a DataFrame whose columns
     diverge from the statements' axis (cross-statement arithmetic broadening
     the index), fall back to stringifying the DataFrame's own columns so we
-    never crash on a ValueError.
+    never crash on a ValueError. Wrapped in a final try/except so even an
+    unforeseen shape issue leaves the DataFrame labelled with its raw
+    columns rather than bringing down the whole analytics batch.
     """
-    stmt_labels = _period_labels(stmts)
-    if len(stmt_labels) == df.shape[1]:
-        df.columns = stmt_labels
-    else:
-        df.columns = _format_cols(df.columns)
+    try:
+        stmt_labels = _period_labels(stmts)
+        if len(stmt_labels) == df.shape[1]:
+            df.columns = stmt_labels
+        else:
+            df.columns = _format_cols(df.columns)
+    except Exception:
+        # Last-resort fallback: leave df.columns unchanged. Downstream code
+        # that reads column values via iteration still works; only pretty
+        # date-formatting is sacrificed.
+        return
 
 
 def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
