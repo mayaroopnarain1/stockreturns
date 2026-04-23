@@ -174,7 +174,29 @@ close = prices_df["Close"]
 ret_metrics = compute_return_metrics(close, risk_free_rate)
 tech_signals = compute_technical_signals(close)
 
-prescription = generate_prescription(info, tech_signals, macro, profile=profile)
+# Defensive wrapper: if anything in the prescription pipeline throws
+# (unexpected info shape, missing keys, etc.), fall back to a neutral
+# Hold verdict so the rest of the page can still render.
+try:
+    prescription = generate_prescription(info, tech_signals, macro, profile=profile)
+except Exception as _exc:
+    prescription = {
+        "verdict": "Hold",
+        "confidence": "Low",
+        "composite_score": 50.0,
+        "valuation_score": 50.0, "quality_score": 50.0,
+        "momentum_score": 50.0, "macro_score": 50.0,
+        "valuation_rationale": ["Data unavailable"],
+        "quality_rationale":   ["Data unavailable"],
+        "momentum_rationale":  ["Data unavailable"],
+        "macro_rationale":     ["Data unavailable"],
+        "weights": {"valuation": 0.25, "quality": 0.25, "momentum": 0.25, "macro": 0.25},
+        "profile": profile,
+        "thesis": (
+            f"Verdict engine couldn't run for {ticker} — likely a data "
+            f"provider hiccup ({type(_exc).__name__}). Other tabs still work."
+        ),
+    }
 
 
 # ===========================================================================
