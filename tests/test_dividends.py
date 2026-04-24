@@ -112,6 +112,32 @@ class YieldStatsTests(unittest.TestCase):
         self.assertEqual(ys["n_years"], 0)
 
 
+class HistoryIndexNameTests(unittest.TestCase):
+    """Dividend history should build cleanly whether the input series index
+    has a name (yfinance fallback returns a Date-named index) or is unnamed
+    (EDGAR path produces DatetimeIndex without a name). The Stock Analysis
+    page derives a ``Year`` column from the index; it previously broke on
+    the named-index path because it assumed ``reset_index`` produces
+    ``"index"`` as the default column name."""
+
+    def test_chart_frame_year_derivation_works_across_index_names(self):
+        for name in ("Date", "end", None):
+            with self.subTest(index_name=name):
+                idx = pd.DatetimeIndex(
+                    ["2023-12-31", "2024-12-31"], name=name,
+                ) if name else pd.DatetimeIndex(["2023-12-31", "2024-12-31"])
+                dps = pd.Series([1.00, 1.10], index=idx)
+                stmts = _eps_stmts(dps.index, [4.0, 4.2])
+                hist = dividend_history(stmts, dps)
+                self.assertFalse(hist.empty)
+                # Mirror the Stock Analysis chart-frame build.
+                chart_df = hist.copy()
+                chart_df["Year"] = pd.to_datetime(chart_df.index).year.astype(int)
+                chart_df = chart_df.reset_index(drop=True)
+                self.assertIn("Year", chart_df.columns)
+                self.assertEqual(list(chart_df["Year"]), [2023, 2024])
+
+
 class SummarizeTests(unittest.TestCase):
     def test_empty_inputs_return_empty_history(self):
         out = summarize({}, pd.Series(dtype=float), None, None)
