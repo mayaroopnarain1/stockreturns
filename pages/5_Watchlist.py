@@ -101,7 +101,7 @@ if not items:
         "and use the _Add to Watchlist_ button.",
         icon=":material/lightbulb:",
     )
-    st.page_link("pages/2_Stock_Analysis.py", label="Open Stock Analysis", icon=":material/query_stats:")
+    st.page_link("pages/1_Stock_Analysis.py", label="Open Stock Analysis", icon=":material/query_stats:")
     st.stop()
 
 
@@ -339,7 +339,7 @@ for it in items:
             width="stretch",
         ):
             st.session_state["analysis_ticker"] = t
-            st.switch_page("pages/2_Stock_Analysis.py")
+            st.switch_page("pages/1_Stock_Analysis.py")
 
 
 # ===========================================================================

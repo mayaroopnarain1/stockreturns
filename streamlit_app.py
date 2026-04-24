@@ -354,10 +354,10 @@ st.subheader(":material/explore: Explore")
 
 ncol1, ncol2, ncol3, ncol4, ncol5 = st.columns(5)
 with ncol1:
-    st.page_link("pages/2_Stock_Analysis.py", label="Stock Analysis", icon=":material/query_stats:")
+    st.page_link("pages/1_Stock_Analysis.py", label="Stock Analysis", icon=":material/query_stats:")
     st.caption("Buy / Hold / Avoid verdict with transparent rubric")
 with ncol2:
-    st.page_link("pages/1_Stock_Screener.py", label="Screener", icon=":material/search:")
+    st.page_link("pages/2_Stock_Screener.py", label="Screener", icon=":material/search:")
     st.caption("Find undervalued names across the S&P 500")
 with ncol3:
     st.page_link("pages/3_Compare_Stocks.py", label="Compare", icon=":material/compare_arrows:")

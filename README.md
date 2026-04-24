@@ -91,8 +91,8 @@ The composite maps to a verdict band (Buy / Hold / Avoid) plus a confidence leve
 Stocks/
 ├── streamlit_app.py          # Market Pulse home page
 ├── pages/
-│   ├── 1_Stock_Screener.py
-│   ├── 2_Stock_Analysis.py
+│   ├── 1_Stock_Analysis.py
+│   ├── 2_Stock_Screener.py
 │   ├── 3_Compare_Stocks.py
 │   ├── 4_Portfolio_Risk.py
 │   ├── 5_Watchlist.py
