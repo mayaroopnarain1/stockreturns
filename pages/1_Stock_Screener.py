@@ -2,18 +2,17 @@
 """
 Page 1 — Stock Screener
 
-Scan the S&P 500 for stocks that match your criteria. Key upgrades from v1:
-  - Investor profile selector reweights the composite score for Value / Growth /
-    Income / Balanced investors.
-  - Sector filter (multi-select) for targeted searches.
-  - "Run screen" button defers the slow S&P-500 bulk fetch so landing on the
-    page doesn't trigger a 3-8 minute wait.
-  - Quick "Add to watchlist" button per result row.
+Screen the S&P 500 for stocks matching simple, labeled filter ranges. Every
+filter is a dropdown ("Any", "Value (< 15)", "Strong (> 15%)", etc.) so
+users don't need to know what a reasonable P/E or Debt/Equity value looks
+like before using the tool.
+
+The first click on "Run screen" triggers a 3–8 minute bulk fetch of S&P 500
+fundamentals; subsequent runs hit the 12h cache and are instant.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -30,74 +29,157 @@ st.set_page_config(
 
 st.title(":material/search: Stock Screener")
 st.caption(
-    "Screen the S&P 500 for stocks matching your criteria. Adjust filters in "
-    "the sidebar, choose an investor profile to reweight the composite score, "
-    "then run the screen."
+    "Screen the S&P 500 for stocks matching your criteria. Pick from the "
+    "labeled ranges in the sidebar, then run the screen."
 )
 
 
 # ---------------------------------------------------------------------------
-# Investor-profile-aware composite weights
+# Filter presets — one labeled dropdown per metric
 # ---------------------------------------------------------------------------
-# Three score components — valuation, quality, growth — with per-profile
-# weights. Sum to 1.0 for each profile.
-PROFILE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "Balanced":  {"valuation": 0.40, "quality": 0.35, "growth": 0.25},
-    "Value":     {"valuation": 0.60, "quality": 0.30, "growth": 0.10},
-    "Growth":    {"valuation": 0.15, "quality": 0.30, "growth": 0.55},
-    "Income":    {"valuation": 0.40, "quality": 0.45, "growth": 0.15},
+# Each entry: (label, min_inclusive_or_None, max_inclusive_or_None).
+# "Any" means no filter; other options define a bound. A single bound on
+# one side is the typical case; two-sided is used for market-cap tiers.
+#
+# yfinance reports debtToEquity as a percentage (150 = 1.5×). The preset
+# bounds match that convention (< 50 = < 0.5×).
+
+FILTER_PRESETS: dict[str, list[tuple[str, float | None, float | None]]] = {
+    "marketCap": [
+        ("Any",                     None,      None),
+        ("Mega cap (> $200B)",      200e9,     None),
+        ("Large cap ($10–200B)",    10e9,      200e9),
+        ("Mid cap ($2–10B)",        2e9,       10e9),
+        ("Small cap (< $2B)",       None,      2e9),
+    ],
+    "trailingPE": [
+        ("Any",                     None,      None),
+        ("Value (< 15)",            None,      15),
+        ("Moderate (< 25)",         None,      25),
+        ("Growthy (< 40)",          None,      40),
+        ("Expensive (< 60)",        None,      60),
+    ],
+    "priceToBook": [
+        ("Any",                     None,      None),
+        ("Below book (< 1.0)",      None,      1.0),
+        ("Cheap (< 2.0)",           None,      2.0),
+        ("Moderate (< 4.0)",        None,      4.0),
+        ("Premium (< 8.0)",         None,      8.0),
+    ],
+    "enterpriseToEbitda": [
+        ("Any",                     None,      None),
+        ("Bargain (< 8)",           None,      8),
+        ("Fair (< 15)",             None,      15),
+        ("Premium (< 25)",          None,      25),
+    ],
+    "pegRatio": [
+        ("Any",                     None,      None),
+        ("Undervalued (< 1.0)",     None,      1.0),
+        ("Fair (< 2.0)",            None,      2.0),
+        ("Rich (< 3.0)",            None,      3.0),
+    ],
+    "dividendYield": [
+        ("Any",                     None,      None),
+        ("Pays dividend (> 0%)",    0.0001,    None),
+        ("Income (> 2%)",           0.02,      None),
+        ("High yield (> 4%)",       0.04,      None),
+        ("Very high (> 6%)",        0.06,      None),
+    ],
+    "returnOnEquity": [
+        ("Any",                     None,      None),
+        ("Positive (> 0%)",         0.0,       None),
+        ("Decent (> 10%)",          0.10,      None),
+        ("Strong (> 15%)",          0.15,      None),
+        ("Elite (> 25%)",           0.25,      None),
+    ],
+    "profitMargins": [
+        ("Any",                     None,      None),
+        ("Positive (> 0%)",         0.0,       None),
+        ("Healthy (> 10%)",         0.10,      None),
+        ("Premium (> 20%)",         0.20,      None),
+    ],
+    "revenueGrowth": [
+        ("Any",                     None,      None),
+        ("Positive (> 0%)",         0.0,       None),
+        ("Growing (> 5%)",          0.05,      None),
+        ("Fast (> 15%)",            0.15,      None),
+        ("Hyper (> 30%)",           0.30,      None),
+    ],
+    "debtToEquity": [
+        ("Any",                     None,      None),
+        ("Debt-free (< 0.25×)",     None,      25),
+        ("Conservative (< 0.5×)",   None,      50),
+        ("Moderate (< 1.0×)",       None,      100),
+        ("Leveraged (< 2.0×)",      None,      200),
+    ],
 }
 
-PROFILE_BLURBS = {
-    "Balanced": "Equal-ish emphasis on cheap multiples, solid profitability, and decent growth.",
-    "Value":    "Leans heavily on low multiples — ranks Graham-style cheapness first.",
-    "Growth":   "Prioritizes revenue growth and earnings trajectory over price.",
-    "Income":   "Weights quality and dividend sustainability; muted growth emphasis.",
-}
+
+def _preset_labels(key: str) -> list[str]:
+    return [label for label, _, _ in FILTER_PRESETS[key]]
+
+
+def _preset_bounds(key: str, label: str) -> tuple[float | None, float | None]:
+    for lbl, lo, hi in FILTER_PRESETS[key]:
+        if lbl == label:
+            return lo, hi
+    return None, None
+
+
+def _apply_bounds(series: pd.Series, lo: float | None, hi: float | None) -> pd.Series:
+    """Build a boolean mask for a series against optional inclusive bounds.
+
+    Rows with NaN values fail any active bound check (same semantics the
+    slider-based version used via ``.fillna(sentinel)``). When both bounds
+    are None the mask is all-True.
+    """
+    if lo is None and hi is None:
+        return pd.Series(True, index=series.index)
+    mask = series.notna()
+    if lo is not None:
+        mask &= series >= lo
+    if hi is not None:
+        mask &= series <= hi
+    return mask
+
+
+# Reset helper — resets all filter selectboxes to "Any" on next rerun.
+RESET_FLAG_KEY = "_screener_reset_pending"
+if st.session_state.get(RESET_FLAG_KEY):
+    for key in FILTER_PRESETS:
+        st.session_state[f"filter_{key}"] = "Any"
+    st.session_state["sector_filter"] = []
+    st.session_state[RESET_FLAG_KEY] = False
 
 
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.subheader("Investor profile")
-    profile = st.selectbox(
-        "Composite score weighting",
-        list(PROFILE_SCORE_WEIGHTS.keys()),
-        index=0,
-        help="Reweights the Value Score. Default is Balanced.",
-    )
-    st.caption(PROFILE_BLURBS[profile])
+    st.subheader("Market cap & valuation")
+    sel_marketCap  = st.selectbox("Market cap tier",  _preset_labels("marketCap"),         key="filter_marketCap")
+    sel_trailingPE = st.selectbox("Trailing P/E",     _preset_labels("trailingPE"),        key="filter_trailingPE", help=FUNDAMENTAL_DESC.get("trailingPE"))
+    sel_priceToBook = st.selectbox("Price / Book",    _preset_labels("priceToBook"),       key="filter_priceToBook", help=FUNDAMENTAL_DESC.get("priceToBook"))
+    sel_evEbitda   = st.selectbox("EV / EBITDA",      _preset_labels("enterpriseToEbitda"),key="filter_enterpriseToEbitda", help=FUNDAMENTAL_DESC.get("enterpriseToEbitda"))
+    sel_peg        = st.selectbox("PEG ratio",        _preset_labels("pegRatio"),          key="filter_pegRatio", help=FUNDAMENTAL_DESC.get("pegRatio"))
 
-    w = PROFILE_SCORE_WEIGHTS[profile]
-    st.caption(
-        f"Weights → Valuation {int(w['valuation'] * 100)}% · "
-        f"Quality {int(w['quality'] * 100)}% · Growth {int(w['growth'] * 100)}%"
-    )
+    st.subheader("Quality")
+    sel_roe        = st.selectbox("Return on equity", _preset_labels("returnOnEquity"),    key="filter_returnOnEquity", help=FUNDAMENTAL_DESC.get("returnOnEquity"))
+    sel_margin     = st.selectbox("Profit margin",    _preset_labels("profitMargins"),     key="filter_profitMargins", help=FUNDAMENTAL_DESC.get("profitMargins"))
+    sel_de         = st.selectbox("Debt / equity",    _preset_labels("debtToEquity"),      key="filter_debtToEquity", help=FUNDAMENTAL_DESC.get("debtToEquity"))
+
+    st.subheader("Growth & income")
+    sel_revGrowth  = st.selectbox("Revenue growth",   _preset_labels("revenueGrowth"),     key="filter_revenueGrowth", help=FUNDAMENTAL_DESC.get("revenueGrowth"))
+    sel_divYield   = st.selectbox("Dividend yield",   _preset_labels("dividendYield"),     key="filter_dividendYield")
 
     st.divider()
-    st.subheader("Valuation filters")
-    max_pe = st.slider("Max Trailing P/E", 0, 100, 25, help=FUNDAMENTAL_DESC["trailingPE"])
-    max_pb = st.slider("Max Price/Book", 0.0, 20.0, 5.0, step=0.5, help=FUNDAMENTAL_DESC["priceToBook"])
-    max_ev_ebitda = st.slider("Max EV/EBITDA", 0.0, 50.0, 15.0, step=0.5, help=FUNDAMENTAL_DESC["enterpriseToEbitda"])
-    max_peg = st.slider("Max PEG Ratio", 0.0, 5.0, 2.0, step=0.1, help=FUNDAMENTAL_DESC["pegRatio"])
-
-    st.subheader("Quality filters")
-    min_roe = st.slider("Min Return on Equity (%)", 0, 50, 10, help=FUNDAMENTAL_DESC["returnOnEquity"]) / 100
-    max_de = st.slider("Max Debt/Equity", 0.0, 10.0, 3.0, step=0.5, help=FUNDAMENTAL_DESC["debtToEquity"])
-    min_margin = st.slider("Min Profit Margin (%)", -20, 60, 5, help=FUNDAMENTAL_DESC["profitMargins"]) / 100
-
-    st.subheader("Growth & income filters")
-    min_rev_growth = st.slider("Min Revenue Growth (%)", -50, 100, 0, help=FUNDAMENTAL_DESC["revenueGrowth"]) / 100
-    min_div_yield = st.slider("Min Dividend Yield (%)", 0.0, 10.0, 0.0, step=0.25) / 100
-
-    st.subheader("Other")
-    min_mcap = st.number_input("Min Market Cap ($B)", value=1.0, step=1.0) * 1e9
-
-    # Sector filter — populated after fetch; show a placeholder note
     st.caption("Sector filter appears after the first screen run.")
 
     show_descriptions = st.checkbox("Show metric descriptions", value=False)
+
+    if st.button("Reset filters", width="stretch"):
+        st.session_state[RESET_FLAG_KEY] = True
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +237,7 @@ with st.sidebar:
         "Sector filter",
         all_sectors,
         default=[],
+        key="sector_filter",
         help="Leave empty for all sectors.",
     )
 
@@ -162,70 +245,33 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Apply filters
 # ---------------------------------------------------------------------------
+selection = {
+    "marketCap":          sel_marketCap,
+    "trailingPE":         sel_trailingPE,
+    "priceToBook":        sel_priceToBook,
+    "enterpriseToEbitda": sel_evEbitda,
+    "pegRatio":           sel_peg,
+    "dividendYield":      sel_divYield,
+    "returnOnEquity":     sel_roe,
+    "profitMargins":      sel_margin,
+    "revenueGrowth":      sel_revGrowth,
+    "debtToEquity":       sel_de,
+}
+
 mask = pd.Series(True, index=df.index)
-if "trailingPE" in df.columns:
-    mask &= df["trailingPE"].fillna(999) <= max_pe
-if "priceToBook" in df.columns:
-    mask &= df["priceToBook"].fillna(999) <= max_pb
-if "enterpriseToEbitda" in df.columns:
-    mask &= df["enterpriseToEbitda"].fillna(999) <= max_ev_ebitda
-if "pegRatio" in df.columns:
-    mask &= df["pegRatio"].fillna(999) <= max_peg
-if "returnOnEquity" in df.columns:
-    mask &= df["returnOnEquity"].fillna(0) >= min_roe
-if "debtToEquity" in df.columns:
-    # yfinance reports D/E as a percentage (e.g. 150 for 1.5x)
-    mask &= df["debtToEquity"].fillna(999) <= max_de * 100
-if "profitMargins" in df.columns:
-    mask &= df["profitMargins"].fillna(-999) >= min_margin
-if "revenueGrowth" in df.columns:
-    mask &= df["revenueGrowth"].fillna(-999) >= min_rev_growth
-if "dividendYield" in df.columns:
-    mask &= df["dividendYield"].fillna(0) >= min_div_yield
-if "marketCap" in df.columns:
-    mask &= df["marketCap"].fillna(0) >= min_mcap
+for field, label in selection.items():
+    if field not in df.columns:
+        continue
+    lo, hi = _preset_bounds(field, label)
+    mask &= _apply_bounds(df[field], lo, hi)
 if sector_filter and "sector" in df.columns:
     mask &= df["sector"].isin(sector_filter)
 
 filtered = df[mask].copy()
 
-
-# ---------------------------------------------------------------------------
-# Composite score (investor-profile aware)
-# ---------------------------------------------------------------------------
-def rank_pct(series: pd.Series, ascending: bool = True) -> pd.Series:
-    """Rank as percentile 0–100. ascending=True → lower raw value scores higher."""
-    return series.rank(pct=True, ascending=ascending, na_option="bottom") * 100
-
-
-if len(filtered) > 1:
-    scores = pd.DataFrame(index=filtered.index)
-    # Valuation (lower = better)
-    scores["PE"] = rank_pct(filtered["trailingPE"], ascending=True)
-    scores["PB"] = rank_pct(filtered["priceToBook"], ascending=True)
-    scores["EVEBITDA"] = rank_pct(filtered["enterpriseToEbitda"], ascending=True)
-    scores["PEG"] = rank_pct(filtered["pegRatio"], ascending=True)
-    # Quality (higher = better)
-    scores["ROE"] = rank_pct(filtered["returnOnEquity"], ascending=False)
-    scores["Margin"] = rank_pct(filtered["profitMargins"], ascending=False)
-    # Growth (higher = better)
-    scores["RevGrowth"] = rank_pct(filtered["revenueGrowth"], ascending=False)
-
-    valuation_score = scores[["PE", "PB", "EVEBITDA", "PEG"]].mean(axis=1)
-    quality_score = scores[["ROE", "Margin"]].mean(axis=1)
-    growth_score = scores["RevGrowth"]
-
-    wt = PROFILE_SCORE_WEIGHTS[profile]
-    filtered["Value Score"] = (
-        wt["valuation"] * valuation_score
-        + wt["quality"] * quality_score
-        + wt["growth"] * growth_score
-    ).round(1)
-    filtered["_val_sub"] = valuation_score.round(0)
-    filtered["_qual_sub"] = quality_score.round(0)
-    filtered["_grow_sub"] = growth_score.round(0)
-
-    filtered = filtered.sort_values("Value Score", ascending=False)
+# Default sort: largest market cap first.
+if "marketCap" in filtered.columns:
+    filtered = filtered.sort_values("marketCap", ascending=False, na_position="last")
 
 
 # ---------------------------------------------------------------------------
@@ -233,68 +279,54 @@ if len(filtered) > 1:
 # ---------------------------------------------------------------------------
 n_total = len(df)
 n_pass = len(filtered)
+active_filters = [field for field, label in selection.items() if label != "Any"]
+if sector_filter:
+    active_filters.append("sector")
 
 scol1, scol2, scol3 = st.columns(3)
 scol1.metric("Stocks in universe", n_total)
 scol2.metric("Pass filters", n_pass)
-scol3.metric("Active profile", profile)
+scol3.metric("Active filters", len(active_filters))
 
 st.subheader(f"Results — {n_pass} of {n_total} stocks")
 
 if filtered.empty:
-    st.warning("No stocks match the current filters. Try loosening the criteria.")
+    st.warning("No stocks match the current filters. Try loosening the criteria or clicking **Reset filters**.")
     st.stop()
 
 
 # Main display table
 display_cols = {
-    "Value Score": "Score",
-    "_val_sub": "Val",
-    "_qual_sub": "Qlty",
-    "_grow_sub": "Grw",
-    "shortName": "Company",
-    "sector": "Sector",
-    "marketCapB": "Mkt Cap ($B)",
-    "currentPrice": "Price",
-    "trailingPE": "P/E",
-    "forwardPE": "Fwd P/E",
-    "priceToBook": "P/B",
-    "enterpriseToEbitda": "EV/EBITDA",
-    "pegRatio": "PEG",
-    "dividendYieldPct": "Div Yield %",
-    "returnOnEquity": "ROE",
-    "profitMargins": "Margin",
-    "revenueGrowth": "Rev Growth",
-    "debtToEquity": "D/E",
-    "beta": "Beta",
-    "pct_below_52w_high": "% Below 52w High",
+    "shortName":            "Company",
+    "sector":               "Sector",
+    "marketCapB":           "Mkt Cap ($B)",
+    "currentPrice":         "Price",
+    "trailingPE":           "P/E",
+    "forwardPE":            "Fwd P/E",
+    "priceToBook":          "P/B",
+    "enterpriseToEbitda":   "EV/EBITDA",
+    "pegRatio":             "PEG",
+    "dividendYieldPct":     "Div Yield %",
+    "returnOnEquity":       "ROE",
+    "profitMargins":        "Margin",
+    "revenueGrowth":        "Rev Growth",
+    "debtToEquity":         "D/E",
+    "beta":                 "Beta",
+    "pct_below_52w_high":   "% Below 52w High",
 }
 available = {k: v for k, v in display_cols.items() if k in filtered.columns}
 display = filtered[list(available.keys())].rename(columns=available)
 
-# Pretty percentages
+# Pretty percentages for ratio fields that yfinance reports as fractions.
 for col in ["ROE", "Margin", "Rev Growth"]:
     if col in display.columns:
         display[col] = (display[col] * 100).round(2).astype(str) + "%"
 
-st.dataframe(
-    display,
-    width="stretch",
-    height=550,
-    column_config={
-        "Score": st.column_config.ProgressColumn(
-            "Score",
-            min_value=0,
-            max_value=100,
-            format="%.0f",
-            help="Composite score (0–100) based on selected investor profile weighting.",
-        ),
-    },
-)
+st.dataframe(display, width="stretch", height=550)
 
 
 # ---------------------------------------------------------------------------
-# Quick actions — add top N to watchlist
+# Quick actions — add top N (by market cap) to watchlist
 # ---------------------------------------------------------------------------
 st.divider()
 st.subheader(":material/bookmark_add: Quick actions")
@@ -305,7 +337,7 @@ top_n = min(10, len(filtered))
 qcol1, qcol2, qcol3 = st.columns([2, 2, 3])
 with qcol1:
     n_add = st.number_input(
-        "Add top N to watchlist", min_value=1, max_value=top_n, value=min(5, top_n), step=1
+        "Add top N by market cap", min_value=1, max_value=top_n, value=min(5, top_n), step=1
     )
 with qcol2:
     if st.button(f"Add top {n_add}", type="primary", width="stretch"):
@@ -329,29 +361,10 @@ with qcol3:
 
 
 # ---------------------------------------------------------------------------
-# Metric descriptions & score explanation
+# Metric descriptions
 # ---------------------------------------------------------------------------
 if show_descriptions:
     with st.expander("What do these metrics mean?"):
         for key, desc in FUNDAMENTAL_DESC.items():
             if key in display_cols:
                 st.markdown(f"**{display_cols.get(key, key)}:** {desc}")
-
-with st.expander("How is the score calculated?"):
-    w = PROFILE_SCORE_WEIGHTS[profile]
-    st.markdown(
-        f"""
-        The **Composite Score** ranks each stock from 0–100 against the others
-        that passed your filters, using weights for the **{profile}** profile:
-
-        - **Valuation ({int(w['valuation'] * 100)}%)** — average percentile rank across
-          P/E, P/B, EV/EBITDA, and PEG. Lower multiples → higher score.
-        - **Quality ({int(w['quality'] * 100)}%)** — average percentile rank of ROE and
-          profit margin. Higher → better.
-        - **Growth ({int(w['growth'] * 100)}%)** — percentile rank of revenue growth.
-
-        The "Val / Qlty / Grw" columns show the sub-scores (each 0–100) so you
-        can see *why* a stock scored the way it did. Change the investor profile
-        in the sidebar to reweight the composite.
-        """
-    )
