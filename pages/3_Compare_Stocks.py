@@ -489,5 +489,5 @@ with c2:
     st.page_link("pages/4_Portfolio_Risk.py", label="Build a portfolio", icon=":material/account_balance_wallet:")
     st.caption("Enter weights and see risk contribution.")
 with c3:
-    st.page_link("pages/2_Stock_Analysis.py", label="Drill into a single name", icon=":material/query_stats:")
+    st.page_link("pages/1_Stock_Analysis.py", label="Drill into a single name", icon=":material/query_stats:")
     st.caption("Full verdict + technicals + fundamentals.")

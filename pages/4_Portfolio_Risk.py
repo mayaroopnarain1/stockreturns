@@ -551,6 +551,6 @@ c1, c2, c3 = st.columns(3)
 with c1:
     st.page_link("pages/3_Compare_Stocks.py", label="Compare these names", icon=":material/compare_arrows:")
 with c2:
-    st.page_link("pages/2_Stock_Analysis.py", label="Analyze a single name", icon=":material/query_stats:")
+    st.page_link("pages/1_Stock_Analysis.py", label="Analyze a single name", icon=":material/query_stats:")
 with c3:
     st.page_link("pages/5_Watchlist.py", label="Manage Watchlist", icon=":material/visibility:")

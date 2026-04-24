@@ -300,13 +300,14 @@ with vs_col:
             border-radius: 12px;
             padding: 18px 22px;
             background: #f8f9fa;
+            color: #2c3e50;
             height: 100%;
             display: flex;
             align-items: center;
         ">
             <div>
                 <div style="font-size: 13px; color: #666; text-transform: uppercase; letter-spacing: 0.08em;">Thesis</div>
-                <div style="font-size: 16px; line-height: 1.5; margin-top: 4px;">{prescription['thesis']}</div>
+                <div style="font-size: 16px; line-height: 1.5; margin-top: 4px; color: #2c3e50;">{prescription['thesis']}</div>
             </div>
         </div>
         """,
@@ -1051,10 +1052,11 @@ with tab_financials:
                     border-radius: 6px;
                     padding: 8px 12px;
                     background: #f8f9fa;
+                    color: #2c3e50;
                     margin-bottom: 6px;
                 ">
                     <div style="font-size: 11px; color: #666;">{name}</div>
-                    <div style="font-size: 20px; font-weight: 700;">{fmt(v)}</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #2c3e50;">{fmt(v)}</div>
                     <div style="font-size: 11px; color: {color}; text-transform: uppercase;">{band}</div>
                 </div>
                 """,
