@@ -607,8 +607,13 @@ with tab_fund:
 
         # --- DPS history chart ---
         if not hist_df.empty:
-            chart_df = hist_df.reset_index().rename(columns={"index": "Year"})
-            chart_df["Year"] = pd.to_datetime(chart_df["Year"]).dt.year.astype(int)
+            # Build the chart frame without relying on reset_index's default
+            # column naming — it uses the index's .name when present (e.g.
+            # "Date" when a yfinance fallback populated dividends), which
+            # broke the subsequent "Year" lookup.
+            chart_df = hist_df.copy()
+            chart_df["Year"] = pd.to_datetime(chart_df.index).year.astype(int)
+            chart_df = chart_df.reset_index(drop=True)
             bars = (
                 alt.Chart(chart_df)
                 .mark_bar(color="#27ae60")
