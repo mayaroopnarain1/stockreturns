@@ -125,13 +125,15 @@ def _user_agent() -> str:
     The secrets lookup is wrapped so the client still imports cleanly when run
     outside Streamlit (unit tests).
     """
-    try:
-        import streamlit as st  # lazy — avoid hard Streamlit dep in tests
-        ua = st.secrets.get("edgar", {}).get("user_agent")  # type: ignore[attr-defined]
-        if ua:
-            return str(ua)
-    except Exception:
-        pass
+    # The API service reads configuration from the environment only.
+    if os.environ.get("STOCKLENS_BACKEND", "").lower() != "api":
+        try:
+            import streamlit as st  # lazy — avoid hard Streamlit dep in tests
+            ua = st.secrets.get("edgar", {}).get("user_agent")  # type: ignore[attr-defined]
+            if ua:
+                return str(ua)
+        except Exception:
+            pass
     return os.environ.get("EDGAR_USER_AGENT", DEFAULT_USER_AGENT)
 
 
