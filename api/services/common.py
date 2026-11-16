@@ -34,3 +34,12 @@ def rsi_bucket(value: float | None) -> dict:
     if value <= 30:
         return {"label": "Oversold", "value": value}
     return {"label": "Neutral", "value": value}
+
+
+def scalar_metrics(m: dict) -> dict:
+    """Drop the pandas Series from ``compute_return_metrics`` output, keeping scalars."""
+    return {k: v for k, v in m.items() if not hasattr(v, "iloc")}
+
+
+class ServiceError(ValueError):
+    """A user-correctable problem (maps to HTTP 422)."""
