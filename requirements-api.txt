@@ -1,0 +1,8 @@
+# Dependencies for the FastAPI service (api/) that powers the HTML/PWA front end.
+# The Streamlit app keeps using requirements.txt.
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
+pandas>=2.0,<3.0
+numpy>=1.26,<3.0
+requests>=2.31,<3.0
+yfinance>=1.2,<2.0
