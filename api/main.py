@@ -8,6 +8,13 @@ Fake data:     STOCKLENS_FAKE_DATA=1 STOCKLENS_BACKEND=api uvicorn api.main:app
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 9):  # pragma: no cover - environment check
+    raise SystemExit("StockLens needs Python 3.9 or newer (found %s). Install a newer Python, e.g. "
+                     "`brew install python@3.12`." % sys.version.split()[0])
+
+import logging
 import os
 
 # The API never needs Streamlit; make utils.* pick the framework-free cache.
@@ -34,6 +41,20 @@ def client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+log = logging.getLogger("stocklens")
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    """Any unhandled failure (most often the market-data provider being down or rate-limiting)
+    becomes a readable JSON error the front end can show, instead of a bare 500 page."""
+    log.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        {"detail": "Couldn't fetch market data right now — the data provider may be down or rate-limiting. "
+                   "Please try again in a minute."},
+        status_code=502)
 
 
 @app.middleware("http")

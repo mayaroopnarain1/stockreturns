@@ -3,6 +3,8 @@
 Shared metric computations used across multiple pages.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 

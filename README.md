@@ -42,6 +42,39 @@ streamlit run streamlit_app.py
 
 Streamlit opens the app at http://localhost:8501.
 
+## Run the web app (HTML / iPhone version)
+
+A mobile-first web app (installable to the iPhone Home Screen) that uses the same Python analytics through a small
+FastAPI service. The Streamlit app above is unchanged.
+
+**1. Get the code** (no git needed): download
+`https://github.com/mayaroopnarain1/stockreturns/archive/refs/heads/claude/add-financial-statements-KCrx9.zip`
+(or *Code → Download ZIP* on the branch page), unzip it, and `cd` into the folder. With git:
+`git clone -b claude/add-financial-statements-KCrx9 https://github.com/mayaroopnarain1/stockreturns.git`.
+
+**2. Start it** from inside that folder:
+
+```bash
+bash scripts/run_local.sh          # live data (Yahoo Finance + SEC EDGAR)
+bash scripts/run_local.sh --fake   # built-in demo data: no internet or yfinance needed
+```
+
+The script picks a suitable Python (3.10+ preferred; 3.9, the macOS default, works for demo data), creates a private
+`.venv` in the folder, installs the packages and prints the addresses to open. Use `STOCKLENS_PYTHON=/path/to/python`
+to choose a specific interpreter and `--port=9000` to change the port.
+
+**3. Open it** at `http://localhost:8000` on the computer, or `http://<computer-IP>:8000` on an iPhone on the same
+Wi-Fi (type `http://` yourself). In Safari tap *Share → Add to Home Screen*.
+
+**Troubleshooting**
+
+| Symptom | Fix |
+|---|---|
+| `not a git repository` / `requirements-api.txt` not found | You're in the wrong folder. `cd` into the unzipped project first. |
+| iPhone can't connect, but the computer can | Same Wi-Fi? No VPN/guest network? Open *System Settings → Network → Firewall* and allow Python. Some Wi-Fi blocks device-to-device traffic: use the iPhone's Personal Hotspot, or a tunnel: `cloudflared tunnel --url http://localhost:8000` (anyone with the printed URL can reach your app while it runs). |
+| Pages show *Couldn't fetch market data* | Yahoo is down or rate-limiting. Wait a minute and retry. |
+| Want to try the interface with no internet | `bash scripts/run_local.sh --fake`. Numbers are synthetic. |
+
 ## SEC EDGAR configuration (optional)
 
 The app runs out of the box with no setup — it identifies itself to SEC
@@ -97,6 +130,9 @@ Stocks/
 │   ├── 4_Portfolio_Risk.py
 │   ├── 5_Watchlist.py
 │   └── archive/              # Legacy pages, preserved
+├── api/                      # FastAPI service for the HTML app (services, routers, fake data)
+├── web/                      # HTML/PWA front end (static; served by the API)
+├── scripts/run_local.sh      # one-command launcher
 ├── utils/
 │   ├── data.py               # Data façade; dispatches to providers (cached)
 │   ├── providers/            # SEC EDGAR (primary) + yfinance (fallback)

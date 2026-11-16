@@ -5,6 +5,8 @@ service and the fake-data source. Importing this module needs only the
 standard library and pandas — no network client, no UI framework.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 
 # Fields copied from each ticker's info dict into the bulk fundamentals table.

@@ -9,6 +9,8 @@ ticker EDGAR does not cover (ADRs, foreign issuers). All caching stays here so
 Streamlit behaviour is unchanged.
 """
 
+from __future__ import annotations
+
 from utils.cache import cache_data
 import yfinance as yf
 import pandas as pd

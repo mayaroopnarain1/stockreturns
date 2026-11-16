@@ -62,3 +62,20 @@ class ValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderFailureTests(unittest.TestCase):
+    """yfinance can raise anything when Yahoo is unreachable; the API must answer with clean JSON."""
+
+    def test_provider_crash_becomes_502_json(self):
+        from api import fake
+        orig = fake.get_price_history
+        fake.get_price_history = lambda *a, **k: (_ for _ in ()).throw(TypeError("'NoneType' object is not subscriptable"))
+        try:
+            safe = TestClient(app, raise_server_exceptions=False)
+            r = safe.get("/api/analysis/AAPL/overview")
+        finally:
+            fake.get_price_history = orig
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("try again", r.json()["detail"].lower())
+        self.assertNotIn("NoneType", r.json()["detail"])      # no internals leaked to the browser

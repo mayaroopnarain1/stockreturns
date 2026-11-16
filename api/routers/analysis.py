@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
@@ -14,7 +16,7 @@ from api.services.common import ServiceError
 router = APIRouter(prefix="/analysis")
 
 
-def _params(horizon: str, start: str | None, end: str | None, profile: str,
+def _params(horizon: str, start: Optional[str], end: Optional[str], profile: str,
             rf: float, outlier_z: float, rolling: int) -> A.Params:
     if horizon != "custom" and horizon not in VALID_HORIZONS:
         raise HTTPException(status_code=422, detail=f"Invalid horizon: {horizon!r}")
@@ -41,21 +43,21 @@ def _respond(payload) -> JSONResponse:
 
 
 @router.get("/{ticker}/overview")
-def overview(ticker: str, horizon: str = "1y", start: str | None = None, end: str | None = None,
+def overview(ticker: str, horizon: str = "1y", start: Optional[str] = None, end: Optional[str] = None,
              profile: str = "Balanced", rf: float = 0.05, outlier_z: float = 3.0, rolling: int = 30):
     return _respond(A.overview(_ctx(ticker, horizon, start, end, profile, rf, outlier_z, rolling)))
 
 
 @router.get("/{ticker}/fundamentals")
-def fundamentals(ticker: str, context: bool = False, horizon: str = "1y", start: str | None = None,
-                 end: str | None = None, profile: str = "Balanced", rf: float = 0.05,
+def fundamentals(ticker: str, context: bool = False, horizon: str = "1y", start: Optional[str] = None,
+                 end: Optional[str] = None, profile: str = "Balanced", rf: float = 0.05,
                  outlier_z: float = 3.0, rolling: int = 30):
     return _respond(F.fundamentals(_ctx(ticker, horizon, start, end, profile, rf, outlier_z, rolling), context))
 
 
 @router.get("/{ticker}/financials")
-def financials(ticker: str, freq: str = "annual", horizon: str = "1y", start: str | None = None,
-               end: str | None = None, profile: str = "Balanced", rf: float = 0.05,
+def financials(ticker: str, freq: str = "annual", horizon: str = "1y", start: Optional[str] = None,
+               end: Optional[str] = None, profile: str = "Balanced", rf: float = 0.05,
                outlier_z: float = 3.0, rolling: int = 30):
     if freq not in ("annual", "quarterly"):
         raise HTTPException(status_code=422, detail="freq must be annual or quarterly")
@@ -63,20 +65,20 @@ def financials(ticker: str, freq: str = "annual", horizon: str = "1y", start: st
 
 
 @router.get("/{ticker}/technicals")
-def technicals(ticker: str, horizon: str = "1y", start: str | None = None, end: str | None = None,
+def technicals(ticker: str, horizon: str = "1y", start: Optional[str] = None, end: Optional[str] = None,
                profile: str = "Balanced", rf: float = 0.05, outlier_z: float = 3.0, rolling: int = 30):
     return _respond(A.technicals(_ctx(ticker, horizon, start, end, profile, rf, outlier_z, rolling)))
 
 
 @router.get("/{ticker}/risk")
-def risk(ticker: str, horizon: str = "1y", start: str | None = None, end: str | None = None,
+def risk(ticker: str, horizon: str = "1y", start: Optional[str] = None, end: Optional[str] = None,
          profile: str = "Balanced", rf: float = 0.05, outlier_z: float = 3.0, rolling: int = 30):
     return _respond(A.risk(_ctx(ticker, horizon, start, end, profile, rf, outlier_z, rolling)))
 
 
 @router.get("/{ticker}/events")
-def events(ticker: str, relative: bool = False, horizon: str = "1y", start: str | None = None,
-           end: str | None = None, profile: str = "Balanced", rf: float = 0.05,
+def events(ticker: str, relative: bool = False, horizon: str = "1y", start: Optional[str] = None,
+           end: Optional[str] = None, profile: str = "Balanced", rf: float = 0.05,
            outlier_z: float = 3.0, rolling: int = 30):
     ctx = _ctx(ticker, horizon, start, end, profile, rf, outlier_z, rolling)
     return _respond({**A.events(ctx, relative), "seasonality": A.seasonality(ctx)})

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -15,8 +17,8 @@ router = APIRouter()
 
 class WatchItem(BaseModel):
     ticker: str
-    target_price: float | None = None
-    added_date: str | None = None
+    target_price: Optional[float] = None
+    added_date: Optional[str] = None
     notes: str = Field(default="", max_length=500)
 
 
