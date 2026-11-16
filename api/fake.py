@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from utils.constants import (  # noqa: F401 - mirrors utils.data's public names
+    FUNDAMENTAL_FIELDS,
     MACRO_TICKERS,
     SECTOR_ETF,
     SP500_TICKERS,
@@ -138,15 +139,7 @@ def get_ticker_info(symbol: str) -> dict:
 
 
 def fetch_fundamentals_bulk(tickers: list[str]) -> pd.DataFrame:
-    fields = [
-        "shortName", "sector", "industry", "marketCap", "trailingPE", "forwardPE",
-        "priceToBook", "enterpriseToEbitda", "priceToSalesTrailing12Months", "pegRatio",
-        "dividendYield", "payoutRatio", "returnOnEquity", "returnOnAssets",
-        "profitMargins", "operatingMargins", "revenueGrowth", "earningsGrowth",
-        "debtToEquity", "currentRatio", "freeCashflow", "operatingCashflow",
-        "enterpriseValue", "totalRevenue", "ebitda", "beta", "fiftyTwoWeekHigh",
-        "fiftyTwoWeekLow", "currentPrice",
-    ]
+    fields = FUNDAMENTAL_FIELDS
     rows = []
     for t in tickers:
         info = get_ticker_info(t)

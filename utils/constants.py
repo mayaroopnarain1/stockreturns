@@ -7,6 +7,22 @@ standard library and pandas — no network client, no UI framework.
 
 import pandas as pd
 
+# Fields copied from each ticker's info dict into the bulk fundamentals table.
+FUNDAMENTAL_FIELDS: list[str] = [
+    "shortName", "sector", "industry", "marketCap",
+    "trailingPE", "forwardPE", "priceToBook", "enterpriseToEbitda",
+    "priceToSalesTrailing12Months", "pegRatio",
+    "dividendYield", "payoutRatio",
+    "returnOnEquity", "returnOnAssets",
+    "profitMargins", "operatingMargins",
+    "revenueGrowth", "earningsGrowth",
+    "debtToEquity", "currentRatio",
+    "freeCashflow", "operatingCashflow",
+    "enterpriseValue", "totalRevenue", "ebitda",
+    "beta", "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
+    "currentPrice",
+]
+
 # ---------------------------------------------------------------------------
 # Sector -> SPDR sector ETF mapping (used for peer comparison)
 # ---------------------------------------------------------------------------

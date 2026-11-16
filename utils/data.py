@@ -20,6 +20,7 @@ from utils.providers import edgar_provider
 from utils.constants import (  # noqa: F401 - re-exported for existing importers
     MACRO_TICKERS,
     SECTOR_ETF,
+    FUNDAMENTAL_FIELDS,
     SP500_TICKERS,
     UNIVERSE_OPTIONS,
     get_sector_etf,
@@ -95,20 +96,7 @@ def fetch_fundamentals_bulk(tickers: list[str]) -> pd.DataFrame:
     Returns a DataFrame indexed by ticker with one row per stock.
     Slow for large lists (~1-2 sec per ticker). Cache aggressively.
     """
-    fields = [
-        "shortName", "sector", "industry", "marketCap",
-        "trailingPE", "forwardPE", "priceToBook", "enterpriseToEbitda",
-        "priceToSalesTrailing12Months", "pegRatio",
-        "dividendYield", "payoutRatio",
-        "returnOnEquity", "returnOnAssets",
-        "profitMargins", "operatingMargins",
-        "revenueGrowth", "earningsGrowth",
-        "debtToEquity", "currentRatio",
-        "freeCashflow", "operatingCashflow",
-        "enterpriseValue", "totalRevenue", "ebitda",
-        "beta", "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
-        "currentPrice",
-    ]
+    fields = FUNDAMENTAL_FIELDS
 
     rows = []
     for sym in tickers:
